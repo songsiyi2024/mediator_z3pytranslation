@@ -1,0 +1,31 @@
+plugins {
+    id 'java'
+}
+
+group 'org.fmgroup.mediator.examples'
+version '1.0-SNAPSHOT'
+
+sourceCompatibility = '1.8'
+
+sourceSets {
+    examples {
+        java {
+            srcDir 'examples'
+        }
+        compileClasspath = files('org')
+        runtimeClasspath = files('org')
+    }
+}
+
+tasks.register('compileExamples', JavaCompile) {
+    source = sourceSets.examples.java
+    classpath = files('.') + files('org')
+    destinationDir = file('examples_bin')
+    options.encoding = 'UTF-8'
+}
+
+tasks.register('runParseExample', JavaExec) {
+    dependsOn 'compileExamples'
+    main = 'ParseExample'
+    classpath = files('org') + files('examples_bin')
+}

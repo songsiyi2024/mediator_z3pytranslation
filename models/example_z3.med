@@ -1,0 +1,12 @@
+automaton Counter () {
+    variables {
+        x : int init 0;
+    }
+    transitions {
+        [x >= 0] -> { x = x + 1; }
+        [x > 5] -> { x = x - 10; }
+    }
+    properties {
+        safe : x >= 0;
+    }
+}
