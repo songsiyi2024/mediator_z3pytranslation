@@ -1,0 +1,7 @@
+// NOTE: The real build files are under tools/gradle/ to keep the repo root tidy.
+// To build/run examples using Gradle, either install Gradle and run the gradlew delegator
+// in the repository root, or invoke the scripts in examples/.
+
+// For advanced usage, run:
+//    ./gradlew runParseExample
+// which delegates to the tools/gradle build implementation.
