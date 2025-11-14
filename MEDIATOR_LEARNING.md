@@ -18,6 +18,7 @@
 1. 引言
 2. 语言概览（语法要点与示例）
 3. 把文本变为程序：解析器与 AST
+  - 3.4 ANTLR 与 Parse Tree（入门）
 4. 语言运行时：Program、Entity、Automaton 与 Property
 5. 插件架构：Command、Generator、FileSet
 6. 仿真器（Simulator）与求值（Evaluation）
@@ -115,6 +116,132 @@ Automaton a = (Automaton) prog.getEntity(null, "Counter");
 List<VariableDeclaration> vars = a.getLocalVars().getDeclarationList();
 List<Transition> trans = a.getTransitions();
 ```
+
+### 3.4 ANTLR 与 Parse Tree（入门）
+
+为什么需要 ANTLR？
+
+- ANTLR 是一个流行的 parser-generator：你用一个语法文件（`.g4`）描述语言的词法和语法，ANTLR 会根据这个描述生成一个 Lexer（把文本拆成 token）和一个 Parser（把 token 组织成 parse tree）。
+- 在本项目中，ANTLR 负责把 `.med` 的源文本转换为一个 parse tree，接着项目把 parse tree 转换为更友好的 AST（Program / Automaton / Term 等）。
+
+什么是 Parse Tree？
+
+- Parse Tree（解析树）是直接由语法产生的树形结构：每个节点对应语法规则或词法 token。它保留了完整的语法信息（包括所有括号、分号、具体的语法分支），通常比 AST 更“冗长”。
+- 示例（极简化，基于 `x = x + 1;`）：
+
+  AssignmentStatement
+  ├─ Identifier: x
+  ├─ '='
+  └─ Expression
+     ├─ Identifier: x
+     ├─ '+'
+     └─ IntLiteral: 1
+
+Parse Tree 与 AST 的区别（直观）
+
+- Parse Tree 是语法的镜像，保留所有细节；AST 是经过精简/抽象后的结构，只保留语义上重要的节点（例如把 `Expression` 中的加法直接变成 `BinaryOperatorTerm`，并去掉语法噪音）。
+- 把 Parse Tree 转为 AST 的过程叫做 "AST construction" 或 "tree walking"，通常使用 ANTLR 生成的 Listener/Visitor（在本项目中，Program 有一个 fromContext / factory 方法把 parse tree 转换为 AST）。
+
+项目中的流程（一步步）
+
+1. 读取 `.med` 源文本。
+2. 用 ANTLR 创建 Lexer 和 Parser；Parser 执行入口规则（例如 `prog()`），生成 parse tree（`ParseTree` 或 `ParserRuleContext` 子类）。
+3. 使用一个 Listener/Visitor 或手写的转换函数遍历 parse tree，将语法节点映射为 AST 对象（例如 `TransitionSingle`、`BinaryOperatorTerm`）。
+4. AST 经语义分析（类型检查、符号解析）后可直接供 Generator/Simulator 使用。
+
+一个最小的转换示例（伪代码）
+
+假设我们有一条 parse tree 节点 `assignmentContext`（由 ANTLR 生成），伪代码把它变为 AST `AssignmentStatement`：
+
+```java
+// listener/visitor 回调中
+public AssignmentStatement visitAssignment(AssignmentContext ctx) {
+  String id = ctx.ID().getText();
+  Term expr = visitExpression(ctx.expression()); // 递归处理子表达式
+  VariableDeclaration var = lookupVar(id);
+  return new AssignmentStatement(var, expr);
+}
+```
+
+Parse Tree 的树形结构如何影响生成器
+
+- Parse Tree 中的每一个表达式/语句都对应一个或多个 AST 节点。Generator 不直接操作 parse tree（那样太冗长），而是操作 AST：
+  - AST 节点（Term、Statement、Transition）提供了语义化的方法（例如 `getGuard()` 返回一个 Term 对象），便于在 `Z3Generator` 中写 `termToZ3`。 
+  - 生成器的职责是把 AST 节点映射为目标语言表达（例如把 `AssignmentStatement` 变为一条 `x_{t+1} == x_t + 1` 的 z3 约束）。
+
+重组（assembly）阶段长什么样？
+
+- 在完成 AST 到目标片段的映射后，生成器会把这些代码片段以合理顺序 "组装" 成最终输出文件：
+  1. 前言（imports / helper functions）
+  2. 变量声明（按时间展开的声明 x_0..x_k）
+  3. 初始状态约束（x_0 == init）
+  4. 每步的 transition 约束（for t in 0..k-1: add Or(branch_i)）
+  5. property 的否定组合与 check-sat 代码
+  6. 模型打印/结果处理
+
+举例（以 `Counter` 示例串联说明）
+
+- 原始 `.med`（见第 2 节）：
+
+```med
+automaton Counter () {
+  variables {
+    x : int init 0;
+  }
+  transitions {
+    [x >= 0] -> { x = x + 1; }
+    [x > 5] -> { x = x - 10; }
+  }
+  properties {
+    safe : x >= 0;
+  }
+}
+```
+
+- parse tree（局部示意）:
+
+```
+Automaton
+├─ 'automaton'
+├─ Identifier: Counter
+├─ '('
+├─ ')'
+├─ '{'
+├─ VariablesBlock
+│  └─ VariableDecl
+│     ├─ Identifier: x
+│     ├─ ':'
+│     └─ Type: int init 0
+├─ TransitionsBlock
+│  ├─ Transition
+│  │  ├─ Guard: x >= 0
+│  │  └─ StatementBlock: x = x + 1
+│  └─ Transition
+│     ├─ Guard: x > 5
+│     └─ StatementBlock: x = x - 10
+└─ PropertiesBlock
+   └─ Property: safe : x >= 0
+```
+
+- AST（精简）:
+
+```
+Automaton(name=Counter,
+  vars=[VariableDeclaration(name=x,type=int,init=0)],
+  transitions=[Transition(guard=BinaryOp(x,GE,0), stmts=[Assign(x, BinaryOp(x,ADD,1))]),
+         Transition(guard=BinaryOp(x,GT,5), stmts=[Assign(x, BinaryOp(x,SUB,10))])],
+  properties=[Property(name=safe, formula=BinaryOp(x,GE,0))]
+)
+```
+
+- Generator（Z3Generator）做的事情：
+  1. 遍历 AST，找到变量 x 并为每个时间 t 生成 `x_t` 的声明。  
+  2. 把初始值 `x_0 == 0` 加入约束集合。  
+  3. 对每一步 t，把第一条 transition 的分支生成 `And(x_t >= 0, x_{t+1} == x_t + 1, otherVarsUnchanged...)`，第二条分支类似。  
+  4. 把 property 的否定组合构成 `Or(Not(safe_0),...,Not(safe_k))` 并加入 check。  
+
+小结：Parse Tree 是从语法角度的“完整”树，AST 是语义友好的精简树，生成器基于 AST 做映射和重组，最后写出目标语言脚本（例如 z3py）。
+
 
 上面演示了最常见的数据流：文本 -> Program.parseFile -> Program/Automaton -> 读取变量和 transition。
 

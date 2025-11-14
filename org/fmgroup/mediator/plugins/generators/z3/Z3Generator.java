@@ -19,6 +19,11 @@ import org.fmgroup.mediator.language.term.FieldTerm;
 import org.fmgroup.mediator.language.term.IdValue;
 import org.fmgroup.mediator.language.term.IntValue;
 import org.fmgroup.mediator.language.term.SingleOperatorTerm;
+import org.fmgroup.mediator.language.term.FieldTerm;
+import org.fmgroup.mediator.language.term.IteTerm;
+import org.fmgroup.mediator.language.term.StructTerm;
+import org.fmgroup.mediator.language.term.NullValue;
+import org.fmgroup.mediator.language.term.EnumValue;
 import org.fmgroup.mediator.language.term.Term;
 import org.fmgroup.mediator.language.term.BoolValue;
 import org.fmgroup.mediator.plugin.generator.FileSet;
@@ -163,17 +168,88 @@ public class Z3Generator implements Generator {
     }
 
     private String termToZ3(Term term, int t) throws ValidationException {
-        if (term == null) return "0";
+        if (term == null) {
+            // unknown term -> produce a boolean false by default to avoid producing integer 0 in guards
+            return "False";
+        }
+
+        // Identifier (variable or enum constant)
         if (term instanceof IdValue) {
             IdValue id = (IdValue) term;
-            return String.format("%s_%d", id.getIdentifier(), t);
+            String name = id.getIdentifier();
+            if ("null".equals(name)) {
+                // use -1 as a NULL sentinel for integer/optional fields
+                return String.valueOf(-1);
+            }
+            return String.format("%s_%d", name, t);
         }
+
+        // Integer literal
         if (term instanceof IntValue) {
-            return ((IntValue) term).toString();
+            IntValue iv = (IntValue) term;
+            return String.valueOf(iv.getValue());
         }
+
+        // Boolean literal
         if (term instanceof BoolValue) {
-            return ((BoolValue) term).getValue() ? "True" : "False";
+            BoolValue bv = (BoolValue) term;
+            return bv.getValue() ? "True" : "False";
         }
+
+        // Null literal
+        if (term instanceof NullValue) {
+            return String.valueOf(-1);
+        }
+
+        // Enum literal - map to a string literal for now (generator may instead emit integer constants)
+        if (term instanceof EnumValue) {
+            EnumValue ev = (EnumValue) term;
+            // prefer a quoted name; translation of enums to ints should be centralized in type mapping
+            return String.format("\"%s\"", ev.getIdentifier());
+        }
+
+        // Field access: <owner>.<field> -> translate to flattened name owner_field_t
+        if (term instanceof FieldTerm) {
+            FieldTerm ft = (FieldTerm) term;
+            Term owner = ft.getOwner();
+            String field = ft.getField();
+            if (owner instanceof IdValue) {
+                String ownerName = ((IdValue) owner).getIdentifier();
+                return String.format("%s_%s_%d", ownerName, field, t);
+            } else {
+                // fallback: try to render owner and append field (may contain a time suffix)
+                String ownerStr = termToZ3(owner, t);
+                // strip trailing _<t> if present
+                ownerStr = ownerStr.replaceAll("_(\\d+)$", "");
+                return String.format("%s_%s_%d", ownerStr, field, t);
+            }
+        }
+
+        // Struct literal: produce a Python dict of field->expr (caller must handle assignment expansion)
+        if (term instanceof StructTerm) {
+            StructTerm st = (StructTerm) term;
+            StringBuilder sb = new StringBuilder();
+            sb.append("{");
+            boolean first = true;
+            for (java.util.Map.Entry<String, Term> e : st.getFields().entrySet()) {
+                if (!first) sb.append(", ");
+                sb.append(String.format("\"%s\": %s", e.getKey(), termToZ3(e.getValue(), t)));
+                first = false;
+            }
+            sb.append("}");
+            return sb.toString();
+        }
+
+        // ITE (cond ? then : else)
+        if (term instanceof IteTerm) {
+            IteTerm it = (IteTerm) term;
+            String c = termToZ3(it.getCondition(), t);
+            String th = termToZ3(it.getThenTerm(), t);
+            String el = termToZ3(it.getElseTerm(), t);
+            return String.format("If(%s, %s, %s)", c, th, el);
+        }
+
+        // Binary operator (logical, comparison, arithmetic)
         if (term instanceof BinaryOperatorTerm) {
             BinaryOperatorTerm bt = (BinaryOperatorTerm) term;
             String l = termToZ3(bt.getLeft(), t);
@@ -195,13 +271,16 @@ public class Z3Generator implements Generator {
                 case MOD: return String.format("Mod(%s, %s)", l, r);
             }
         }
+
+        // Unary operator (logical not)
         if (term instanceof SingleOperatorTerm) {
             SingleOperatorTerm st = (SingleOperatorTerm) term;
             EnumSingleOperator opr = st.getOpr();
             String inner = termToZ3(st.getTerm(), t);
             if (opr == EnumSingleOperator.LNOT) return String.format("Not(%s)", inner);
         }
-        // fallback for unsupported terms: return 0
-        return "0";
+
+        // fallback: unsupported term -> raise explicit error so user knows to extend generator
+        throw ValidationException.UnderDevelopment();
     }
 }
