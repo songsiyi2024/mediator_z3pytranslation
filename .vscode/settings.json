@@ -1,8 +1,0 @@
-{
-  "java.project.sourcePaths": [
-    "release"
-  ],
-  "java.project.referencedLibraries": [
-    "lib/**/*.jar"
-  ]
-}
