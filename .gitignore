@@ -4,5 +4,5 @@
 .gradle/
 
 # Ignore large local Gradle distribution used for offline wrapper
-/tools/gradle/gradle-8.4-dist/
-/tools/gradle/gradle-8.4-bin.zip
+
+/tools/gradle/
