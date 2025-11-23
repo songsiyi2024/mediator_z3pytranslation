@@ -17,7 +17,10 @@ public class TestZ3Generation {
 
             // 1. Parse the model file
             // Note: Adjust path if running from a different directory
-            String modelPath = "models/smallcar/motor.med";
+            String modelPath = args.length > 0 ? args[0] : "models/smallcar/motor.med";
+            String systemName = args.length > 1 ? args[1] : "testbench";
+            int bound = args.length > 2 ? Integer.parseInt(args[2]) : 20;
+
             java.lang.System.out.println("Parsing model: " + modelPath);
             
             List<String> paths = new ArrayList<>();
@@ -43,16 +46,16 @@ public class TestZ3Generation {
                 }
             }
 
-            // 2. Find the system entity 'testbench'
-            Entity entity = prog.getEntity(null, "testbench");
+            // 2. Find the system entity
+            Entity entity = prog.getEntity(null, systemName);
             
             if (entity == null) {
-                java.lang.System.err.println("Error: Could not find system 'testbench' in " + modelPath);
+                java.lang.System.err.println("Error: Could not find system '" + systemName + "' in " + modelPath);
                 return;
             }
             
             if (!(entity instanceof System)) {
-                java.lang.System.err.println("Error: Entity 'testbench' is not a System, it is " + entity.getClass().getSimpleName());
+                java.lang.System.err.println("Error: Entity '" + systemName + "' is not a System, it is " + entity.getClass().getSimpleName());
                 return;
             }
             
@@ -60,7 +63,7 @@ public class TestZ3Generation {
             
             // 3. Generate Z3 code
             Z3Generator generator = new Z3Generator();
-            generator.setBound(20); // Set unfolding steps to 20
+            generator.setBound(bound); // Set unfolding steps
             if (!generator.available(entity)) {
                  java.lang.System.err.println("Error: Z3Generator says entity is not available.");
                  return;
