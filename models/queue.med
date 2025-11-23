@@ -70,4 +70,4 @@ system <T:type, N:int> middleware_in_use () {
         Queue<T, 1>(M1, M2);
         Replicator<T>(M2, consumer_1.IN, consumer_2.IN, consumer_3.IN);
     }
-}}
+}

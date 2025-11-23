@@ -17,6 +17,9 @@ automaton <pinDirection:int, pinSpeed:int> engine (speed : in signedPWM) {
             }
         }
     }
+    properties {
+        safe: speed.value < 1000;
+    }
 }
 
 

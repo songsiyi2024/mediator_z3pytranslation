@@ -2,12 +2,23 @@ package org.fmgroup.mediator.plugins.generators.z3;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.LinkedHashMap;
+import java.util.HashMap;
+import java.lang.reflect.Field;
 import org.fmgroup.mediator.language.RawElement;
 import org.fmgroup.mediator.language.ValidationException;
 import org.fmgroup.mediator.language.entity.Entity;
 import org.fmgroup.mediator.language.entity.automaton.Automaton;
 import org.fmgroup.mediator.language.entity.automaton.Transition;
+import org.fmgroup.mediator.language.entity.automaton.TransitionGroup;
 import org.fmgroup.mediator.language.entity.automaton.TransitionSingle;
+import org.fmgroup.mediator.language.property.Property;
+import org.fmgroup.mediator.language.property.PropertyCollection;
+import org.fmgroup.mediator.language.property.PathFormulae.PathFormulae;
+import org.fmgroup.mediator.language.property.PathFormulae.AtomicPathFormulae;
+import org.fmgroup.mediator.language.property.StateFormulae.GloballyStateFormulae;
+import org.fmgroup.mediator.language.property.StateFormulae.StateFormulae;
 import org.fmgroup.mediator.language.scope.VariableDeclaration;
 import org.fmgroup.mediator.language.scope.VariableDeclarationCollection;
 import org.fmgroup.mediator.language.statement.AssignmentStatement;
@@ -26,6 +37,17 @@ import org.fmgroup.mediator.language.term.NullValue;
 import org.fmgroup.mediator.language.term.EnumValue;
 import org.fmgroup.mediator.language.term.Term;
 import org.fmgroup.mediator.language.term.BoolValue;
+import org.fmgroup.mediator.language.term.DoubleValue;
+import org.fmgroup.mediator.language.type.Type;
+import org.fmgroup.mediator.language.type.termType.StructType;
+import org.fmgroup.mediator.language.type.termType.EnumType;
+import org.fmgroup.mediator.language.type.termType.UnionType;
+import org.fmgroup.mediator.language.type.termType.BoolType;
+import org.fmgroup.mediator.language.type.termType.IntType;
+import org.fmgroup.mediator.language.type.termType.DoubleType;
+import org.fmgroup.mediator.language.type.termType.IdType;
+import org.fmgroup.mediator.language.entity.system.System;
+import org.fmgroup.mediator.plugins.scheduler.Scheduler;
 import org.fmgroup.mediator.plugin.generator.FileSet;
 import org.fmgroup.mediator.plugin.generator.Generator;
 import org.fmgroup.mediator.plugins.generators.arduino.ArduinoGeneratorException;
@@ -36,17 +58,32 @@ import org.fmgroup.mediator.plugins.generators.arduino.ArduinoGeneratorException
  */
 public class Z3Generator implements Generator {
 
-    private static final int DEFAULT_K = 10;
+    private int k = 10;
+
+    public void setBound(int k) {
+        this.k = k;
+    }
+
+    // enum mapping used during generation: EnumType -> (item -> constName)
+    private Map<org.fmgroup.mediator.language.type.termType.EnumType, Map<String, String>> enumItemConstMap = new HashMap<>();
+    // global reverse mapping: item name -> constName (to resolve IdValue that are actually enum constants)
+    private Map<String, String> globalEnumAliasMap = new HashMap<>();
+    private int enumGlobalCounter = 0;
 
     @Override
     public FileSet generate(RawElement elem) throws ArduinoGeneratorException {
         try {
-            if (!(elem instanceof Automaton)) {
-                throw new ArduinoGeneratorException("Z3Generator only supports Automaton elements");
+            Automaton autom;
+            if (elem instanceof System) {
+                autom = Scheduler.Schedule((System) elem);
+            } else if (elem instanceof Automaton) {
+                autom = (Automaton) elem;
+            } else {
+                throw new ArduinoGeneratorException("Z3Generator supports Automaton or System elements");
             }
-            Automaton autom = (Automaton) elem;
+            
             String name = autom.getName();
-            String py = renderZ3Script(autom, DEFAULT_K);
+            String py = renderZ3Script(autom, this.k);
             FileSet fs = new FileSet();
             fs.add(name + "_z3_check.py", py);
             return fs;
@@ -57,7 +94,7 @@ public class Z3Generator implements Generator {
 
     @Override
     public boolean available(RawElement elem) throws ArduinoGeneratorException {
-        return elem instanceof Automaton;
+        return elem instanceof Automaton || elem instanceof System;
     }
 
     @Override
@@ -80,23 +117,100 @@ public class Z3Generator implements Generator {
         return "Generate Z3 Python script for bounded safety checking";
     }
 
+    private Type resolveType(Type t) {
+        if (t instanceof IdType) {
+            return resolveType(((IdType) t).getReference().getType());
+        }
+        return t;
+    }
+
     private String renderZ3Script(Automaton autom, int k) throws ValidationException {
         StringBuilder sb = new StringBuilder();
         sb.append("from z3 import *\n\n");
 
-        // collect variables
+        // --- Prepare flattened variable declarations (support struct, enum, union tag+payload) ---
         VariableDeclarationCollection vars = autom.getLocalVars();
-        List<String> varNames = new ArrayList<String>();
+
+        // map base variable -> map(fieldName -> fieldType)
+        Map<String, Map<String, Type>> varFields = new LinkedHashMap<>();
+
+        // enum type mapping: EnumType -> (itemName -> constName)
+        enumItemConstMap.clear();
+        globalEnumAliasMap.clear();
+        enumGlobalCounter = 0;
+
         for (VariableDeclaration vd : vars.getDeclarationList()) {
             for (String id : vd.getIdentifiers()) {
-                varNames.add(id);
+                Type vt = vd.getType();
+                Type resolved = resolveType(vt);
+                
+                if (resolved instanceof StructType) {
+                    StructType st = (StructType) resolved;
+                    Map<String, Type> fields = new LinkedHashMap<>();
+                    for (Map.Entry<String, Type> e : st.getFields().entrySet()) {
+                        fields.put(e.getKey(), e.getValue());
+                    }
+                    varFields.put(id, fields);
+                } else if (resolved instanceof EnumType) {
+                    EnumType et = (EnumType) resolved;
+                    // create enum constant names for this enum type if not exist
+                    if (!enumItemConstMap.containsKey(et)) {
+                        Map<String, String> itemMap = new LinkedHashMap<>();
+                        String prefix = String.format("ENUM_%d", enumGlobalCounter++);
+                        int idx = 0;
+                        for (String item : et.getItems()) {
+                            String constName = String.format("%s_%s", prefix, item.replaceAll("[^A-Za-z0-9_]", "_"));
+                            itemMap.put(item, constName);
+                            globalEnumAliasMap.put(item, constName);
+                            idx++;
+                        }
+                        enumItemConstMap.put(et, itemMap);
+                    }
+                    // treat enum variable as single int field named id
+                    Map<String, Type> fields = new LinkedHashMap<>();
+                    fields.put(id, resolved);
+                    varFields.put(id, fields);
+                } else if (resolved instanceof UnionType) {
+                    // tag + payload (payload as Int by default)
+                    Map<String, Type> fields = new LinkedHashMap<>();
+                    fields.put(id + "_tag", null);
+                    fields.put(id + "_val", null);
+                    varFields.put(id, fields);
+                } else {
+                    // primitive or other: single field named id
+                    Map<String, Type> fields = new LinkedHashMap<>();
+                    fields.put(id, resolved);
+                    varFields.put(id, fields);
+                }
             }
         }
 
-        // declare per-step variables
+        // emit enum constant definitions
+        for (Map.Entry<EnumType, Map<String, String>> e : enumItemConstMap.entrySet()) {
+            int idx = 0;
+            for (Map.Entry<String, String> it : e.getValue().entrySet()) {
+                sb.append(String.format("%s = %d\n", it.getValue(), idx));
+                idx++;
+            }
+            sb.append("\n");
+        }
+
+        // declare per-step flattened variables
         for (int t = 0; t <= k; t++) {
-            for (String v : varNames) {
-                sb.append(String.format("%s_%d = Int('%s_%d')\n", v, t, v, t));
+            for (Map.Entry<String, Map<String, Type>> e : varFields.entrySet()) {
+                String base = e.getKey();
+                for (String field : e.getValue().keySet()) {
+                    String atomName = field.equals(base) ? base : (base + "_" + field);
+                    Type ftype = e.getValue().get(field);
+                    // choose Bool or Int or Real by type
+                    if (ftype instanceof BoolType) {
+                        sb.append(String.format("%s_%d = Bool('%s_%d')\n", atomName, t, atomName, t));
+                    } else if (ftype instanceof DoubleType) {
+                        sb.append(String.format("%s_%d = Real('%s_%d')\n", atomName, t, atomName, t));
+                    } else {
+                        sb.append(String.format("%s_%d = Int('%s_%d')\n", atomName, t, atomName, t));
+                    }
+                }
             }
             sb.append("\n");
         }
@@ -105,47 +219,103 @@ public class Z3Generator implements Generator {
         sb.append("s = Solver()\n");
         for (VariableDeclaration vd : vars.getDeclarationList()) {
             for (String id : vd.getIdentifiers()) {
-                Term init = vd.getType().getInitValue();
+                Term init = null;
+                try {
+                    init = vd.getType().getInitValue();
+                } catch (ValidationException e) {
+                    // ignore, type not initialized or does not support initialization
+                }
                 if (init != null) {
-                    String expr0 = termToZ3(init, 0);
-                    sb.append(String.format("s.add(%s_0 == %s)\n", id, expr0));
+                    // if struct init, expand to field inits
+                    if (init instanceof StructTerm) {
+                        StructTerm st = (StructTerm) init;
+                        for (Map.Entry<String, Term> e : st.getFields().entrySet()) {
+                            String atom = e.getKey().equals(id) ? id : (id + "_" + e.getKey());
+                            String expr0 = termToZ3(e.getValue(), 0);
+                            sb.append(String.format("s.add(%s_0 == %s)\n", atom, expr0));
+                        }
+                    } else {
+                        String expr0 = termToZ3(init, 0);
+                        // if enum initial: init may refer to enum literal; termToZ3 will return const name
+                        sb.append(String.format("s.add(%s_0 == %s)\n", id, expr0));
+                    }
                 }
             }
         }
         sb.append("\n");
 
-        // encode transitions as per-step constraints: for simplicity, build disjunction of possible transitions
-        List<Transition> transitions = autom.getTransitions();
+        // encode transitions as per-step constraints: build disjunction of possible transitions
+        List<TransitionSingle> transitions = flattenTransitions(autom.getTransitions());
         for (int t = 0; t < k; t++) {
             StringBuilder stepCond = new StringBuilder();
             stepCond.append("Or(");
             boolean firstTrans = true;
-            for (Transition tr : transitions) {
-                if (!(tr instanceof TransitionSingle)) continue;
-                TransitionSingle ts = (TransitionSingle) tr;
+            for (TransitionSingle ts : transitions) {
                 String guard = termToZ3(ts.getGuard(), t);
-                // build effects: assignments
-                StringBuilder effects = new StringBuilder();
+
                 List<Statement> stmts = ts.getStatements();
                 List<String> updates = new ArrayList<String>();
-                for (Statement s : stmts) {
-                    if (s instanceof AssignmentStatement) {
-                        AssignmentStatement as = (AssignmentStatement) s;
-                        String left = as.getTarget().toString();
-                        String right = termToZ3(as.getExpr(), t);
-                        updates.add(String.format("%s_%d == %s", left, t+1, right));
+
+                for (Statement st : stmts) {
+                    if (!(st instanceof AssignmentStatement)) continue;
+                    AssignmentStatement as = (AssignmentStatement) st;
+                    Term target = as.getTarget();
+                    Term expr = as.getExpr();
+
+                    // target is a plain identifier (variable)
+                    if (target instanceof IdValue) {
+                        String var = ((IdValue) target).getIdentifier();
+                        Map<String, Type> fields = varFields.get(var);
+
+                        if (expr instanceof StructTerm && fields != null && fields.size() > 1) {
+                            StructTerm rhsStruct = (StructTerm) expr;
+                            for (Map.Entry<String, Term> f : rhsStruct.getFields().entrySet()) {
+                                String atom = f.getKey().equals(var) ? var : (var + "_" + f.getKey());
+                                updates.add(String.format("%s_%d == %s", atom, t+1, termToZ3(f.getValue(), t)));
+                            }
+                        } else if (fields != null && fields.size() > 1 && expr instanceof IdValue) {
+                            // copy struct from another variable
+                            String rhs = ((IdValue) expr).getIdentifier();
+                            for (String fld : fields.keySet()) {
+                                String atom = fld.equals(var) ? var : (var + "_" + fld);
+                                String rhsAtom = fld.equals(rhs) ? rhs : (rhs + "_" + fld);
+                                updates.add(String.format("%s_%d == %s_%d", atom, t+1, rhsAtom, t));
+                            }
+                        } else {
+                            // atomic assignment
+                            updates.add(String.format("%s_%d == %s", var, t+1, termToZ3(expr, t)));
+                        }
+
+                    } else if (target instanceof FieldTerm) {
+                        FieldTerm ft = (FieldTerm) target;
+                        Term owner = ft.getOwner();
+                        String field = ft.getField();
+                        if (owner instanceof IdValue) {
+                            String ownerName = ((IdValue) owner).getIdentifier();
+                            String atom = field.equals(ownerName) ? ownerName : (ownerName + "_" + field);
+                            updates.add(String.format("%s_%d == %s", atom, t+1, termToZ3(expr, t)));
+                        } else {
+                            String leftStr = termToZ3(target, t).replaceAll("_(\\d+)$", "");
+                            updates.add(String.format("%s_%d == %s", leftStr, t+1, termToZ3(expr, t)));
+                        }
                     }
                 }
-                // default: copy unchanged vars
-                for (String v : varNames) {
-                    boolean updated = false;
-                    for (String up : updates) {
-                        if (up.startsWith(v + "_")) { updated = true; break; }
-                    }
-                    if (!updated) {
-                        updates.add(String.format("%s_%d == %s_%d", v, t+1, v, t));
+
+                // default: copy unchanged atoms
+                for (Map.Entry<String, Map<String, Type>> ve : varFields.entrySet()) {
+                    String base = ve.getKey();
+                    for (String field : ve.getValue().keySet()) {
+                        String atom = field.equals(base) ? base : (base + "_" + field);
+                        boolean updated = false;
+                        for (String up : updates) {
+                            if (up.startsWith(atom + "_")) { updated = true; break; }
+                        }
+                        if (!updated) {
+                            updates.add(String.format("%s_%d == %s_%d", atom, t+1, atom, t));
+                        }
                     }
                 }
+
                 String updatesConj = String.join(", ", updates);
                 String transExpr = String.format("And(%s, %s)", guard, updatesConj.isEmpty() ? "True" : updatesConj);
                 if (!firstTrans) stepCond.append(", ");
@@ -157,7 +327,8 @@ public class Z3Generator implements Generator {
             sb.append("\n");
         }
 
-        // NOTE: property handling not implemented in prototype. Users can inspect generated script and add assertions.
+        // Generate property verification constraints
+        generateProperties(autom, sb, k);
 
         sb.append("print(s.check())\n");
     sb.append("if s.check() == sat:\n");
@@ -165,6 +336,18 @@ public class Z3Generator implements Generator {
     sb.append("    print(\"counterexample model:\")\n");
     sb.append("    print(m)\n");
         return sb.toString();
+    }
+
+    private List<TransitionSingle> flattenTransitions(List<Transition> transitions) {
+        List<TransitionSingle> result = new ArrayList<>();
+        for (Transition t : transitions) {
+            if (t instanceof TransitionSingle) {
+                result.add((TransitionSingle) t);
+            } else if (t instanceof TransitionGroup) {
+                result.addAll(flattenTransitions(((TransitionGroup) t).getTransitions()));
+            }
+        }
+        return result;
     }
 
     private String termToZ3(Term term, int t) throws ValidationException {
@@ -181,6 +364,10 @@ public class Z3Generator implements Generator {
                 // use -1 as a NULL sentinel for integer/optional fields
                 return String.valueOf(-1);
             }
+            // check if it is an enum constant
+            if (globalEnumAliasMap.containsKey(name)) {
+                return globalEnumAliasMap.get(name);
+            }
             return String.format("%s_%d", name, t);
         }
 
@@ -188,6 +375,12 @@ public class Z3Generator implements Generator {
         if (term instanceof IntValue) {
             IntValue iv = (IntValue) term;
             return String.valueOf(iv.getValue());
+        }
+
+        // Double literal
+        if (term instanceof DoubleValue) {
+            DoubleValue dv = (DoubleValue) term;
+            return String.valueOf(dv.getValue());
         }
 
         // Boolean literal
@@ -204,7 +397,18 @@ public class Z3Generator implements Generator {
         // Enum literal - map to a string literal for now (generator may instead emit integer constants)
         if (term instanceof EnumValue) {
             EnumValue ev = (EnumValue) term;
-            // prefer a quoted name; translation of enums to ints should be centralized in type mapping
+            org.fmgroup.mediator.language.type.termType.EnumType ref = ev.getReference();
+            if (ref != null && enumItemConstMap.containsKey(ref)) {
+                Map<String, String> m = enumItemConstMap.get(ref);
+                if (m.containsKey(ev.getIdentifier())) {
+                    return m.get(ev.getIdentifier());
+                }
+            }
+            // fallback: check global alias map
+            if (globalEnumAliasMap.containsKey(ev.getIdentifier())) {
+                return globalEnumAliasMap.get(ev.getIdentifier());
+            }
+            // fallback: quoted name
             return String.format("\"%s\"", ev.getIdentifier());
         }
 
@@ -278,9 +482,119 @@ public class Z3Generator implements Generator {
             EnumSingleOperator opr = st.getOpr();
             String inner = termToZ3(st.getTerm(), t);
             if (opr == EnumSingleOperator.LNOT) return String.format("Not(%s)", inner);
+            if (opr == EnumSingleOperator.NEGATIVE) return String.format("-(%s)", inner);
         }
 
         // fallback: unsupported term -> raise explicit error so user knows to extend generator
         throw ValidationException.UnderDevelopment();
+    }
+
+    private void generateProperties(Automaton autom, StringBuilder sb, int k) {
+        PropertyCollection pc = autom.getProperties();
+        if (pc == null) return;
+
+        Map<String, Property> props = getPropertiesMap(pc);
+        if (props == null || props.isEmpty()) return;
+
+        sb.append("# Properties verification\n");
+        // We want to check if ANY property is violated.
+        // Violation of G(P) is Exists t: Not(P)
+        
+        List<String> violations = new ArrayList<>();
+
+        for (Map.Entry<String, Property> entry : props.entrySet()) {
+            String propName = entry.getKey();
+            Property prop = entry.getValue();
+            PathFormulae pf = getPathFormulae(prop);
+            
+            if (pf == null) continue;
+
+            String checkExpr = propertyToCheckExpr(pf, k);
+            if (checkExpr != null) {
+                sb.append(String.format("# Property %s violation condition:\n", propName));
+                // sb.append(String.format("prop_%s_violation = %s\n", propName, checkExpr));
+                violations.add(checkExpr);
+            }
+        }
+
+        if (!violations.isEmpty()) {
+            sb.append("s.add(Or(\n");
+            for (int i = 0; i < violations.size(); i++) {
+                sb.append("  " + violations.get(i));
+                if (i < violations.size() - 1) sb.append(",\n");
+            }
+            sb.append("\n))\n");
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Property> getPropertiesMap(PropertyCollection pc) {
+        try {
+            Field f = PropertyCollection.class.getDeclaredField("properties");
+            f.setAccessible(true);
+            return (Map<String, Property>) f.get(pc);
+        } catch (Exception e) {
+            // e.printStackTrace();
+            return null;
+        }
+    }
+
+    private PathFormulae getPathFormulae(Property prop) {
+        try {
+            Field f = Property.class.getDeclaredField("formulae");
+            f.setAccessible(true);
+            return (PathFormulae) f.get(prop);
+        } catch (Exception e) {
+            // e.printStackTrace();
+            return null;
+        }
+    }
+
+    private String propertyToCheckExpr(StateFormulae formula, int k) {
+        // Returns the Z3 expression that is True if the property is VIOLATED.
+        
+        if (formula instanceof GloballyStateFormulae) {
+            // G(phi) violated if Exists t: Not(phi)
+            StateFormulae inner = ((GloballyStateFormulae) formula).getFormula();
+            StringBuilder sb = new StringBuilder();
+            sb.append("Or(");
+            for (int t = 0; t <= k; t++) {
+                try {
+                    // We need Not(phi) at time t
+                    // If inner is Atomic, we can use termToZ3
+                    if (inner instanceof AtomicPathFormulae) {
+                        Term term = ((AtomicPathFormulae) inner).getTerm();
+                        String termZ3 = termToZ3(term, t);
+                        sb.append(String.format("Not(%s)", termZ3));
+                    } else {
+                        // Nested temporal operators not supported yet
+                        return "False"; // Ignore
+                    }
+                } catch (ValidationException e) {
+                    return "False";
+                }
+                if (t < k) sb.append(", ");
+            }
+            sb.append(")");
+            return sb.toString();
+        } else if (formula instanceof AtomicPathFormulae) {
+            // Atomic P. Treated as Invariant G(P).
+            Term term = ((AtomicPathFormulae) formula).getTerm();
+            StringBuilder sb = new StringBuilder();
+            sb.append("Or(");
+            for (int t = 0; t <= k; t++) {
+                try {
+                    String termZ3 = termToZ3(term, t);
+                    sb.append(String.format("Not(%s)", termZ3));
+                } catch (ValidationException e) {
+                    return "False";
+                }
+                if (t < k) sb.append(", ");
+            }
+            sb.append(")");
+            return sb.toString();
+        }
+        
+        return null;
     }
 }
