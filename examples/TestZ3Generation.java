@@ -32,20 +32,6 @@ public class TestZ3Generation {
                 return;
             }
 
-            // WORKAROUND: Clear properties from all automata to avoid ValidationException.UnderDevelopment
-            // which is thrown by PropertyCollection.copy() during system instantiation.
-            // We use reflection because setProperties(null) throws NPE.
-            for (org.fmgroup.mediator.language.entity.automaton.Automaton autom : prog.getAutomata().values()) {
-                try {
-                    java.lang.reflect.Field f = org.fmgroup.mediator.language.entity.automaton.Automaton.class.getDeclaredField("properties");
-                    f.setAccessible(true);
-                    f.set(autom, null);
-                } catch (Exception e) {
-                    java.lang.System.err.println("Warning: Failed to clear properties for automaton " + autom.getName());
-                    e.printStackTrace();
-                }
-            }
-
             // 2. Find the system entity
             Entity entity = prog.getEntity(null, systemName);
             
@@ -73,7 +59,14 @@ public class TestZ3Generation {
             FileSet fileSet = generator.generate(entity);
             
             // 4. Output results
-            java.lang.System.out.println(fileSet.toString());
+            // java.lang.System.out.println(fileSet.toString());
+            
+            File outputDir = new File("python_test");
+            if (!outputDir.exists()) {
+                outputDir.mkdirs();
+            }
+            fileSet.writeToFileSystem(outputDir);
+            java.lang.System.out.println("Generated files written to: " + outputDir.getAbsolutePath());
             
         } catch (Exception e) {
             e.printStackTrace();

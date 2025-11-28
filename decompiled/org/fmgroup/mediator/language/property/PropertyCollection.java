@@ -52,7 +52,10 @@ implements RawElement {
     public PropertyCollection copy(RawElement parent) throws ValidationException {
         PropertyCollection props = new PropertyCollection();
         props.setParent(parent);
-        throw ValidationException.UnderDevelopment();
+        for (Map.Entry<String, Property> entry : this.properties.entrySet()) {
+            props.putProperty(entry.getKey(), (Property) entry.getValue().copy(props));
+        }
+        return props;
     }
 
     public String toString() {

@@ -18,6 +18,10 @@ implements Type {
     private RawElement parent;
     private Map<String, Type> fields = new HashMap<String, Type>();
 
+    public Map<String, Type> getFields() {
+        return this.fields;
+    }
+
     public StructType addField(String name, Type type) throws ValidationException {
         if (this.fields.containsKey(name)) {
             throw ValidationException.DumplicatedIdentifier(name, "field name");

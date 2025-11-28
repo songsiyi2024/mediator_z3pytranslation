@@ -37,5 +37,23 @@ implements RawElement {
     public String toString() {
         return this.formulae.toString();
     }
+
+    public PathFormulae getFormulae() {
+        return this.formulae;
+    }
+
+    public Property setFormulae(PathFormulae formulae) {
+        this.formulae = formulae;
+        formulae.setParent(this);
+        return this;
+    }
+
+    @Override
+    public Property copy(RawElement parent) throws ValidationException {
+        Property copy = new Property();
+        copy.setParent(parent);
+        copy.setFormulae((PathFormulae) this.formulae.copy(copy));
+        return copy;
+    }
 }
 

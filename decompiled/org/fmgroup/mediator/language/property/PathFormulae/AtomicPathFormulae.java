@@ -61,5 +61,13 @@ implements PathFormulae {
     public String toString() {
         return this.term.toString();
     }
+
+    @Override
+    public AtomicPathFormulae copy(RawElement parent) throws ValidationException {
+        AtomicPathFormulae copy = new AtomicPathFormulae();
+        copy.setParent(parent);
+        copy.setTerm(this.term.copy(copy));
+        return copy;
+    }
 }
 

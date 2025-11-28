@@ -44,6 +44,12 @@ automaton monitor (IN: in double) {
             // print(IN.value);
         }
     }
+    properties {
+        // The average of 5 samples (0..4) is 2.0.
+        // The average of next 5 samples (5..9) is 7.0.
+        // This property asserts the value is always < 6.0, which should hold for the first batch but fail on the second.
+        safe : IN.value < 6;
+    }
 }
 
 system testbench () {
