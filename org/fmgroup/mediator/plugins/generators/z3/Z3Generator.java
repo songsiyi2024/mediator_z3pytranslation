@@ -45,6 +45,8 @@ import org.fmgroup.mediator.language.type.termType.UnionType;
 import org.fmgroup.mediator.language.type.termType.BoolType;
 import org.fmgroup.mediator.language.type.termType.IntType;
 import org.fmgroup.mediator.language.type.termType.DoubleType;
+import org.fmgroup.mediator.language.type.termType.BoundedIntType;
+import org.fmgroup.mediator.language.type.termType.InitType;
 import org.fmgroup.mediator.language.type.termType.IdType;
 import org.fmgroup.mediator.language.entity.system.System;
 import org.fmgroup.mediator.plugins.scheduler.Scheduler;
@@ -64,7 +66,7 @@ import org.fmgroup.mediator.language.Templated;
  */
 public class Z3Generator implements Generator {
 
-    private int k = 10;
+    private int k = 20;
 
     public void setBound(int k) {
         this.k = k;
@@ -81,12 +83,9 @@ public class Z3Generator implements Generator {
         try {
             Automaton autom;
             if (elem instanceof System) {
-                java.lang.System.out.println("DEBUG: Calling Scheduler.Schedule");
                 autom = Scheduler.Schedule((System) elem);
                 // Fix: Scheduler drops properties, so we manually collect them from sub-components
-                java.lang.System.out.println("DEBUG: Calling collectProperties");
                 collectProperties((System) elem, autom, "");
-                java.lang.System.out.println("DEBUG: collectProperties done");
             } else if (elem instanceof Automaton) {
                 autom = (Automaton) elem;
             } else {
@@ -97,6 +96,16 @@ public class Z3Generator implements Generator {
             String py = renderZ3Script(autom, this.k);
             FileSet fs = new FileSet();
             fs.add(name + "_z3_check.py", py);
+
+            // Output flattened automaton
+            // We add it to the FileSet with a relative path prefix.
+            // The consumer (ParseExample) will write it relative to its output root.
+            try {
+                fs.add("../flattened_automaton/flattened_" + name + ".med", autom.toString());
+            } catch (Exception e) {
+                java.lang.System.err.println("Failed to add flattened automaton to FileSet: " + e.getMessage());
+            }
+
             return fs;
         } catch (Exception e) {
             throw new ArduinoGeneratorException(e.getMessage());
@@ -132,6 +141,9 @@ public class Z3Generator implements Generator {
         if (t instanceof IdType) {
             return resolveType(((IdType) t).getReference().getType());
         }
+        if (t instanceof InitType) {
+            return resolveType(((InitType) t).getBaseType());
+        }
         return t;
     }
 
@@ -141,7 +153,11 @@ public class Z3Generator implements Generator {
         sb.append("def to_real(x):\n");
         sb.append("    if isinstance(x, int):\n");
         sb.append("        return RealVal(x)\n");
-        sb.append("    return ToReal(x)\n\n");
+        sb.append("    if isinstance(x, float):\n");
+        sb.append("        return RealVal(x)\n");
+        sb.append("    if is_int(x):\n");
+        sb.append("        return ToReal(x)\n");
+        sb.append("    return x\n\n");
 
         // --- Prepare flattened variable declarations (support struct, enum, union tag+payload) ---
         VariableDeclarationCollection vars = autom.getLocalVars();
@@ -217,6 +233,9 @@ public class Z3Generator implements Generator {
                 for (String field : e.getValue().keySet()) {
                     String atomName = field.equals(base) ? base : (base + "_" + field);
                     Type ftype = e.getValue().get(field);
+                    if (t == 0) {
+                         java.lang.System.out.println("DEBUG: Variable " + atomName + " type is " + ftype.getClass().getName());
+                    }
                     // choose Bool or Int or Real by type
                     if (ftype instanceof BoolType) {
                         sb.append(String.format("%s_%d = Bool('%s_%d')\n", atomName, t, atomName, t));
@@ -240,17 +259,42 @@ public class Z3Generator implements Generator {
                 } catch (ValidationException e) {
                     // ignore, type not initialized or does not support initialization
                 }
+                
+                java.lang.System.out.println("DEBUG: Variable " + id + " init is " + (init==null?"null":init.toString()));
+
+                // If no explicit init, provide default for primitive types to avoid unconstrained variables
+                if (init == null) {
+                    Type t = resolveType(vd.getType());
+                    java.lang.System.out.println("DEBUG: Variable " + id + " has type " + t.getClass().getName());
+                    if (t instanceof IntType) {
+                        init = new IntValue().setValue(0);
+                    } else if (t instanceof BoundedIntType) {
+                        init = ((BoundedIntType) t).getLowerBound();
+                    } else if (t instanceof DoubleType) {
+                        java.lang.System.out.println("DEBUG: Setting default 0.0 for DoubleType");
+                        init = new DoubleValue().setValue(0.0);
+                    } else if (t instanceof BoolType) {
+                        init = new BoolValue().setValue(false);
+                    }
+                    
+                    if (init != null) {
+                         java.lang.System.out.println("DEBUG: Init set to " + init.toString());
+                    } else {
+                         java.lang.System.out.println("DEBUG: Init remains null");
+                    }
+                }
+
                 if (init != null) {
                     // if struct init, expand to field inits
                     if (init instanceof StructTerm) {
                         StructTerm st = (StructTerm) init;
                         for (Map.Entry<String, Term> e : st.getFields().entrySet()) {
                             String atom = e.getKey().equals(id) ? id : (id + "_" + e.getKey());
-                            String expr0 = termToZ3(e.getValue(), 0, false, null);
+                            String expr0 = termToZ3(e.getValue(), 0);
                             sb.append(String.format("s.add(%s_0 == %s)\n", atom, expr0));
                         }
                     } else {
-                        String expr0 = termToZ3(init, 0, false, null);
+                        String expr0 = termToZ3(init, 0);
                         // if enum initial: init may refer to enum literal; termToZ3 will return const name
                         sb.append(String.format("s.add(%s_0 == %s)\n", id, expr0));
                     }
@@ -266,33 +310,23 @@ public class Z3Generator implements Generator {
             stepCond.append("Or(");
             boolean firstTrans = true;
             for (TransitionSingle ts : transitions) {
-                // Collect assigned variables to filter them out from guards if they are port control signals
-                java.util.Set<String> assignedVars = new java.util.HashSet<>();
-                for (Statement st : ts.getStatements()) {
-                    if (st instanceof AssignmentStatement) {
-                        Term target = ((AssignmentStatement) st).getTarget();
-                        try {
-                            String z3Name = termToZ3(target, t, false, null);
-                            // Strip _t suffix
-                            if (z3Name.lastIndexOf('_') > 0) {
-                                assignedVars.add(z3Name.substring(0, z3Name.lastIndexOf('_')));
-                            }
-                        } catch (ValidationException e) {
-                            // ignore
-                        }
-                    }
-                }
-
-                String guard = termToZ3(ts.getGuard(), t, true, assignedVars);
+                String guard = termToZ3(ts.getGuard(), t);
 
                 List<Statement> stmts = ts.getStatements();
-                List<String> updates = new ArrayList<String>();
+                
+                // Track imperative updates within the transition
+                Map<String, String> currentEnv = new HashMap<>();
+                // Track final values for next state
+                Map<String, String> nextStateValues = new HashMap<>();
 
                 for (Statement st : stmts) {
                     if (!(st instanceof AssignmentStatement)) continue;
                     AssignmentStatement as = (AssignmentStatement) st;
                     Term target = as.getTarget();
                     Term expr = as.getExpr();
+
+                    // Evaluate RHS using current environment (imperative)
+                    String rhs = termToZ3(expr, t, currentEnv);
 
                     // target is a plain identifier (variable)
                     if (target instanceof IdValue) {
@@ -303,22 +337,25 @@ public class Z3Generator implements Generator {
                             StructTerm rhsStruct = (StructTerm) expr;
                             for (Map.Entry<String, Term> f : rhsStruct.getFields().entrySet()) {
                                 String atom = f.getKey().equals(var) ? var : (var + "_" + f.getKey());
-                                boolean isPort = atom.endsWith("_value") || atom.endsWith("_reqRead") || atom.endsWith("_reqWrite");
-                                updates.add(String.format("%s_%d == %s", atom, isPort ? t : t+1, termToZ3(f.getValue(), t, false, null)));
+                                String val = termToZ3(f.getValue(), t, currentEnv);
+                                currentEnv.put(atom, val);
+                                nextStateValues.put(atom, val);
                             }
                         } else if (fields != null && fields.size() > 1 && expr instanceof IdValue) {
                             // copy struct from another variable
-                            String rhs = ((IdValue) expr).getIdentifier();
+                            String rhsId = ((IdValue) expr).getIdentifier();
                             for (String fld : fields.keySet()) {
                                 String atom = fld.equals(var) ? var : (var + "_" + fld);
-                                String rhsAtom = fld.equals(rhs) ? rhs : (rhs + "_" + fld);
-                                boolean isPort = atom.endsWith("_value") || atom.endsWith("_reqRead") || atom.endsWith("_reqWrite");
-                                updates.add(String.format("%s_%d == %s_%d", atom, isPort ? t : t+1, rhsAtom, t));
+                                String rhsAtom = fld.equals(rhsId) ? rhsId : (rhsId + "_" + fld);
+                                // resolve rhsAtom in currentEnv if possible
+                                String val = currentEnv.containsKey(rhsAtom) ? currentEnv.get(rhsAtom) : String.format("%s_%d", rhsAtom, t);
+                                currentEnv.put(atom, val);
+                                nextStateValues.put(atom, val);
                             }
                         } else {
                             // atomic assignment
-                            boolean isPort = var.endsWith("_value") || var.endsWith("_reqRead") || var.endsWith("_reqWrite");
-                            updates.add(String.format("%s_%d == %s", var, isPort ? t : t+1, termToZ3(expr, t, false, null)));
+                            currentEnv.put(var, rhs);
+                            nextStateValues.put(var, rhs);
                         }
 
                     } else if (target instanceof FieldTerm) {
@@ -328,14 +365,20 @@ public class Z3Generator implements Generator {
                         if (owner instanceof IdValue) {
                             String ownerName = ((IdValue) owner).getIdentifier();
                             String atom = field.equals(ownerName) ? ownerName : (ownerName + "_" + field);
-                            boolean isPort = atom.endsWith("_value") || atom.endsWith("_reqRead") || atom.endsWith("_reqWrite");
-                            updates.add(String.format("%s_%d == %s", atom, isPort ? t : t+1, termToZ3(expr, t, false, null)));
+                            currentEnv.put(atom, rhs);
+                            nextStateValues.put(atom, rhs);
                         } else {
-                            String leftStr = termToZ3(target, t, false, null).replaceAll("_(\\d+)$", "");
-                            boolean isPort = leftStr.endsWith("_value") || leftStr.endsWith("_reqRead") || leftStr.endsWith("_reqWrite");
-                            updates.add(String.format("%s_%d == %s", leftStr, isPort ? t : t+1, termToZ3(expr, t, false, null)));
+                            String leftStr = termToZ3(target, t).replaceAll("_(\\d+)$", "");
+                            currentEnv.put(leftStr, rhs);
+                            nextStateValues.put(leftStr, rhs);
                         }
                     }
+                }
+
+                List<String> updates = new ArrayList<>();
+                // Generate constraints for modified variables
+                for (Map.Entry<String, String> e : nextStateValues.entrySet()) {
+                    updates.add(String.format("%s_%d == %s", e.getKey(), t+1, e.getValue()));
                 }
 
                 // default: copy unchanged atoms
@@ -344,14 +387,7 @@ public class Z3Generator implements Generator {
                     for (String field : ve.getValue().keySet()) {
                         String atom = field.equals(base) ? base : (base + "_" + field);
                         
-                        // Skip ports - they are transient
-                        if (atom.endsWith("_value") || atom.endsWith("_reqRead") || atom.endsWith("_reqWrite")) continue;
-
-                        boolean updated = false;
-                        for (String up : updates) {
-                            if (up.startsWith(atom + "_" + (t+1))) { updated = true; break; }
-                        }
-                        if (!updated) {
+                        if (!nextStateValues.containsKey(atom)) {
                             updates.add(String.format("%s_%d == %s_%d", atom, t+1, atom, t));
                         }
                     }
@@ -391,11 +427,15 @@ public class Z3Generator implements Generator {
         return result;
     }
 
-    private String termToZ3(Term term, int t, boolean isGuard, java.util.Set<String> assignedVars) throws ValidationException {
+    private String termToZ3(Term term, int t) throws ValidationException {
+        return termToZ3(term, t, null);
+    }
+
+    private String termToZ3(Term term, int t, Map<String, String> env) throws ValidationException {
         if (term == null) {
             // unknown term -> produce a boolean false by default to avoid producing integer 0 in guards
             // If it is a guard (missing guard), it implies True.
-            return isGuard ? "True" : "False";
+            return "True";
         }
 
         // Identifier (variable or enum constant)
@@ -406,17 +446,17 @@ public class Z3Generator implements Generator {
                 // use -1 as a NULL sentinel for integer/optional fields
                 return String.valueOf(-1);
             }
+            
+            // Check local environment (imperative updates)
+            if (env != null && env.containsKey(name)) {
+                return env.get(name);
+            }
+
             // check if it is an enum constant
             if (globalEnumAliasMap.containsKey(name)) {
                 return globalEnumAliasMap.get(name);
             }
             
-            // If this is a guard, and the variable is a port control signal that is being assigned in this transition,
-            // then it refers to the value *before* the transition, which is False for transient signals.
-            if (isGuard && assignedVars != null && assignedVars.contains(name) && (name.endsWith("_reqRead") || name.endsWith("_reqWrite"))) {
-                return "False";
-            }
-
             return String.format("%s_%d", name, t);
         }
 
@@ -472,14 +512,14 @@ public class Z3Generator implements Generator {
                 atom = field.equals(ownerName) ? ownerName : (ownerName + "_" + field);
             } else {
                 // fallback: try to render owner and append field (may contain a time suffix)
-                String ownerStr = termToZ3(owner, t, isGuard, assignedVars);
+                String ownerStr = termToZ3(owner, t, env);
                 // strip trailing _<t> if present
                 ownerStr = ownerStr.replaceAll("_(\\d+)$", "");
                 atom = String.format("%s_%s", ownerStr, field);
             }
             
-            if (isGuard && assignedVars != null && assignedVars.contains(atom) && (atom.endsWith("_reqRead") || atom.endsWith("_reqWrite"))) {
-                return "False";
+            if (env != null && env.containsKey(atom)) {
+                return env.get(atom);
             }
             return String.format("%s_%d", atom, t);
         }
@@ -492,7 +532,7 @@ public class Z3Generator implements Generator {
             boolean first = true;
             for (java.util.Map.Entry<String, Term> e : st.getFields().entrySet()) {
                 if (!first) sb.append(", ");
-                sb.append(String.format("\"%s\": %s", e.getKey(), termToZ3(e.getValue(), t, isGuard, assignedVars)));
+                sb.append(String.format("\"%s\": %s", e.getKey(), termToZ3(e.getValue(), t, env)));
                 first = false;
             }
             sb.append("}");
@@ -502,17 +542,17 @@ public class Z3Generator implements Generator {
         // ITE (cond ? then : else)
         if (term instanceof IteTerm) {
             IteTerm it = (IteTerm) term;
-            String c = termToZ3(it.getCondition(), t, isGuard, assignedVars);
-            String th = termToZ3(it.getThenTerm(), t, isGuard, assignedVars);
-            String el = termToZ3(it.getElseTerm(), t, isGuard, assignedVars);
+            String c = termToZ3(it.getCondition(), t, env);
+            String th = termToZ3(it.getThenTerm(), t, env);
+            String el = termToZ3(it.getElseTerm(), t, env);
             return String.format("If(%s, %s, %s)", c, th, el);
         }
 
         // Binary operator (logical, comparison, arithmetic)
         if (term instanceof BinaryOperatorTerm) {
             BinaryOperatorTerm bt = (BinaryOperatorTerm) term;
-            String l = termToZ3(bt.getLeft(), t, isGuard, assignedVars);
-            String r = termToZ3(bt.getRight(), t, isGuard, assignedVars);
+            String l = termToZ3(bt.getLeft(), t, env);
+            String r = termToZ3(bt.getRight(), t, env);
             EnumBinaryOperator opr = bt.getOpr();
             switch (opr) {
                 case LAND: return String.format("And(%s, %s)", l, r);
@@ -535,7 +575,7 @@ public class Z3Generator implements Generator {
         if (term instanceof SingleOperatorTerm) {
             SingleOperatorTerm st = (SingleOperatorTerm) term;
             EnumSingleOperator opr = st.getOpr();
-            String inner = termToZ3(st.getTerm(), t, isGuard, assignedVars);
+            String inner = termToZ3(st.getTerm(), t, env);
             if (opr == EnumSingleOperator.LNOT) return String.format("Not(%s)", inner);
             if (opr == EnumSingleOperator.NEGATIVE) return String.format("-(%s)", inner);
         }
@@ -550,7 +590,6 @@ public class Z3Generator implements Generator {
 
         Map<String, Property> props = getPropertiesMap(pc);
         if (props == null || props.isEmpty()) {
-            java.lang.System.out.println("DEBUG: No properties found in map.");
             return;
         }
 
@@ -566,18 +605,14 @@ public class Z3Generator implements Generator {
             PathFormulae pf = getPathFormulae(prop);
             
             if (pf == null) {
-                java.lang.System.out.println("DEBUG: Property " + propName + " has null formulae.");
                 continue;
             }
-            java.lang.System.out.println("DEBUG: Property " + propName + " formulae type: " + pf.getClass().getName());
 
             String checkExpr = propertyToCheckExpr((StateFormulae) pf, k);
             if (checkExpr != null) {
                 sb.append(String.format("# Property %s violation condition:\n", propName));
                 // sb.append(String.format("prop_%s_violation = %s\n", propName, checkExpr));
                 violations.add(checkExpr);
-            } else {
-                java.lang.System.out.println("DEBUG: checkExpr is null for " + propName);
             }
         }
 
@@ -630,7 +665,6 @@ public class Z3Generator implements Generator {
         if (source.getEntityInterface() != null) {
             for (PortDeclaration pd : source.getEntityInterface().getDeclarationList()) {
                 for (String id : pd.getIdentifiers()) {
-                    java.lang.System.out.println("DEBUG: Processing port " + id + " with prefix " + prefix);
                     // PortVariableType.VALUE -> "value"
                     termRewriteMap.put(id + ".value", new IdValue().setParent(target).setIdentifier(prefix + "_" + id + "_value"));
                     termRewriteMap.put(id + ".reqRead", new IdValue().setParent(target).setIdentifier(prefix + "_" + id + "_reqRead"));
@@ -644,20 +678,16 @@ public class Z3Generator implements Generator {
 
         for (Map.Entry<String, Property> entry : props.entrySet()) {
              String propName = entry.getKey();
-             java.lang.System.out.println("DEBUG: Processing property " + propName);
              Property p = entry.getValue();
              
              PathFormulae pf = p.getFormulae();
              if (pf instanceof AtomicPathFormulae) {
                  Term t = ((AtomicPathFormulae) pf).getTerm();
-                 java.lang.System.out.println("DEBUG: Term type: " + t.getClass().getName());
                  
                  // We DO NOT clone the term here because copy(null) crashes on PortVariableValue.
                  // rewriteTerm will create a copy with replacements.
                  
-                 java.lang.System.out.println("DEBUG: Refactoring property " + propName);
                  Term newT = rewriteTerm(t, termRewriteMap, target);
-                 java.lang.System.out.println("DEBUG: Refactoring done for " + propName);
                  
                  Property newP = new Property();
                  AtomicPathFormulae newPf = new AtomicPathFormulae();
@@ -673,7 +703,6 @@ public class Z3Generator implements Generator {
              }
         }
         } catch (Exception e) {
-            java.lang.System.out.println("DEBUG: Exception in addPropertiesFromAutomaton: " + e.getMessage());
             e.printStackTrace();
             if (e instanceof ValidationException) throw (ValidationException) e;
             throw new RuntimeException(e);
@@ -793,7 +822,7 @@ public class Z3Generator implements Generator {
                     // If inner is Atomic, we can use termToZ3
                     if (inner instanceof AtomicPathFormulae) {
                         Term term = ((AtomicPathFormulae) inner).getTerm();
-                        String termZ3 = termToZ3(term, t, false, null);
+                        String termZ3 = termToZ3(term, t);
                         sb.append(String.format("Not(%s)", termZ3));
                     } else {
                         // Nested temporal operators not supported yet
