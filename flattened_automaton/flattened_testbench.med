@@ -16,13 +16,13 @@ automaton testbench () {
 			!false && m_IN_reqRead == false -> m_IN_reqRead = true;
 			!false && s_OUT_reqRead != _smoother_0_count < 5 -> s_OUT_reqRead = _smoother_0_count < 5;
 			!(false || s_OUT_reqRead != _smoother_0_count < 5) && m_IN_reqWrite != (m_IN_reqRead && _smoother_0_count == 5) -> m_IN_reqWrite = m_IN_reqRead && _smoother_0_count == 5;
-			!(false || s_OUT_reqRead != _smoother_0_count < 5 || m_IN_reqWrite != (m_IN_reqRead && _smoother_0_count == 5)) && s_OUT_reqRead && !(false || s_OUT_reqRead != s_OUT_reqWrite) && s_OUT_reqWrite -> {
+			!(false || s_OUT_reqRead != s_OUT_reqWrite) && s_OUT_reqWrite && !(false || s_OUT_reqRead != _smoother_0_count < 5 || m_IN_reqWrite != (m_IN_reqRead && _smoother_0_count == 5)) && s_OUT_reqRead -> {
 				_smoother_0_count = _smoother_0_count + 1;
 				s_OUT_value = s_p;
 				s_OUT_reqWrite = false;
 				s_OUT_reqRead = false;
-				s_p = s_p + 1 % 10;
 				_smoother_0_avg = _smoother_0_avg + s_OUT_value;
+				s_p = s_p + 1 % 10;
 			}
 			!(false || m_IN_reqRead == false) && m_IN_reqWrite && !(false || s_OUT_reqRead != _smoother_0_count < 5 || m_IN_reqWrite != (m_IN_reqRead && _smoother_0_count == 5) || s_OUT_reqRead) && m_IN_reqWrite -> {
 				_smoother_0_count = 0;

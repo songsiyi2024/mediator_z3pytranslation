@@ -1,5 +1,0 @@
-native function sqrt(num : double) : double;
-native function sin(angle : double) : double;
-
-// ......
-// todo add support

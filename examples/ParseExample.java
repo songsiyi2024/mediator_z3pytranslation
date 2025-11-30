@@ -6,10 +6,15 @@ import org.fmgroup.mediator.plugin.generator.FileSet;
 import java.io.File;
 import java.util.Map;
 import java.util.List;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 
 public class ParseExample {
     public static void main(String[] args) throws Exception {
         String model = args.length > 0 ? args[0] : "models/testbench.med";
+        int bound = args.length > 1 ? Integer.parseInt(args[1]) : 20;
+        String customOutputName = args.length > 2 ? args[2] : null;
+
         System.out.println("Parsing: " + model);
         Program p = Program.parseFile(model);
         if (p == null) {
@@ -19,6 +24,8 @@ public class ParseExample {
         
         // Generate Z3
         Z3Generator gen = new Z3Generator();
+        gen.setBound(bound);
+
         org.fmgroup.mediator.language.RawElement target = null;
         
         if (p.getSystems().size() > 0) {
@@ -28,7 +35,8 @@ public class ParseExample {
         }
         
         if (target != null) {
-            System.out.println("Generating Z3 for " + ((org.fmgroup.mediator.language.entity.Entity)target).getName());
+            String name = ((org.fmgroup.mediator.language.entity.Entity)target).getName();
+            System.out.println("Generating Z3 for " + name + " with bound " + bound);
             FileSet fs = gen.generate(target);
             
             File outputDir = new File("python_test");
@@ -43,6 +51,22 @@ public class ParseExample {
             }
             
             fs.writeToFileSystem(outputDir);
+
+            // Rename the generated file if a custom name is provided
+            File generatedFile = new File(outputDir, name + "_z3_check.py");
+            
+            if (customOutputName != null) {
+                File targetFile = new File(outputDir, customOutputName);
+                if (generatedFile.exists()) {
+                    Files.move(generatedFile.toPath(), targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                    System.out.println("Renamed " + generatedFile.getName() + " to " + targetFile.getName());
+                } else {
+                    System.err.println("Expected generated file " + generatedFile.getAbsolutePath() + " not found.");
+                }
+            } else {
+                System.out.println("Generated file: " + generatedFile.getName());
+            }
+
             System.out.println("Generated files in: " + outputDir.getAbsolutePath() + " and " + flattenedDir.getAbsolutePath());
         }
     }

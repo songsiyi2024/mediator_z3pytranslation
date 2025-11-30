@@ -47,6 +47,7 @@ import org.fmgroup.mediator.language.type.termType.IntType;
 import org.fmgroup.mediator.language.type.termType.DoubleType;
 import org.fmgroup.mediator.language.type.termType.BoundedIntType;
 import org.fmgroup.mediator.language.type.termType.InitType;
+import org.fmgroup.mediator.language.type.termType.InitType;
 import org.fmgroup.mediator.language.type.termType.IdType;
 import org.fmgroup.mediator.language.entity.system.System;
 import org.fmgroup.mediator.plugins.scheduler.Scheduler;
@@ -265,22 +266,14 @@ public class Z3Generator implements Generator {
                 // If no explicit init, provide default for primitive types to avoid unconstrained variables
                 if (init == null) {
                     Type t = resolveType(vd.getType());
-                    java.lang.System.out.println("DEBUG: Variable " + id + " has type " + t.getClass().getName());
                     if (t instanceof IntType) {
                         init = new IntValue().setValue(0);
                     } else if (t instanceof BoundedIntType) {
                         init = ((BoundedIntType) t).getLowerBound();
                     } else if (t instanceof DoubleType) {
-                        java.lang.System.out.println("DEBUG: Setting default 0.0 for DoubleType");
                         init = new DoubleValue().setValue(0.0);
                     } else if (t instanceof BoolType) {
                         init = new BoolValue().setValue(false);
-                    }
-                    
-                    if (init != null) {
-                         java.lang.System.out.println("DEBUG: Init set to " + init.toString());
-                    } else {
-                         java.lang.System.out.println("DEBUG: Init remains null");
                     }
                 }
 
@@ -378,7 +371,7 @@ public class Z3Generator implements Generator {
                 List<String> updates = new ArrayList<>();
                 // Generate constraints for modified variables
                 for (Map.Entry<String, String> e : nextStateValues.entrySet()) {
-                    updates.add(String.format("%s_%d == %s", e.getKey(), t+1, e.getValue()));
+                    updates.add(String.format("%s_%d == (%s)", e.getKey(), t+1, e.getValue()));
                 }
 
                 // default: copy unchanged atoms
@@ -396,10 +389,11 @@ public class Z3Generator implements Generator {
                 String updatesConj = String.join(", ", updates);
                 String transExpr = String.format("And(%s, %s)", guard, updatesConj.isEmpty() ? "True" : updatesConj);
                 if (!firstTrans) stepCond.append(", ");
+                stepCond.append("\n    "); // Add newline and indent
                 stepCond.append(transExpr);
                 firstTrans = false;
             }
-            stepCond.append(")\n");
+            stepCond.append("\n)\n");
             sb.append(String.format("s.add(%s)\n", stepCond.toString()));
             sb.append("\n");
         }
@@ -557,12 +551,12 @@ public class Z3Generator implements Generator {
             switch (opr) {
                 case LAND: return String.format("And(%s, %s)", l, r);
                 case LOR: return String.format("Or(%s, %s)", l, r);
-                case EQ: return String.format("%s == %s", l, r);
-                case NEQ: return String.format("Not(%s == %s)", l, r);
-                case LT: return String.format("%s < %s", l, r);
-                case LEQ: return String.format("%s <= %s", l, r);
-                case GT: return String.format("%s > %s", l, r);
-                case GEQ: return String.format("%s >= %s", l, r);
+                case EQ: return String.format("(%s) == (%s)", l, r);
+                case NEQ: return String.format("Not((%s) == (%s))", l, r);
+                case LT: return String.format("(%s < %s)", l, r);
+                case LEQ: return String.format("(%s <= %s)", l, r);
+                case GT: return String.format("(%s > %s)", l, r);
+                case GEQ: return String.format("(%s >= %s)", l, r);
                 case ADD: return String.format("(%s + %s)", l, r);
                 case MINUS: return String.format("(%s - %s)", l, r);
                 case TIMES: return String.format("(%s * %s)", l, r);
@@ -855,4 +849,6 @@ public class Z3Generator implements Generator {
         
         return null;
     }
+
 }
+
