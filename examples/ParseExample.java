@@ -16,7 +16,11 @@ public class ParseExample {
         String customOutputName = args.length > 2 ? args[2] : null;
 
         System.out.println("Parsing: " + model);
-        Program p = Program.parseFile(model);
+        
+        List<String> libPaths = new java.util.ArrayList<>();
+        libPaths.add(new File("library").getAbsolutePath());
+        
+        Program p = Program.parseFile(model, libPaths);
         if (p == null) {
             System.err.println("Parsing failed (null Program). Check for syntax errors printed to stderr.");
             return;

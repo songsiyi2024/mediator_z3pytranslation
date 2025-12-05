@@ -38,6 +38,7 @@ import org.fmgroup.mediator.language.term.EnumValue;
 import org.fmgroup.mediator.language.term.Term;
 import org.fmgroup.mediator.language.term.BoolValue;
 import org.fmgroup.mediator.language.term.DoubleValue;
+import org.fmgroup.mediator.language.term.CallTerm;
 import org.fmgroup.mediator.language.type.Type;
 import org.fmgroup.mediator.language.type.termType.StructType;
 import org.fmgroup.mediator.language.type.termType.EnumType;
@@ -73,9 +74,8 @@ public class Z3Generator implements Generator {
         this.k = k;
     }
 
-    // enum mapping used during generation: EnumType -> (item -> constName)
+    // enum mapping for enumtype(when we met an enum var, we use one map to record the relation between enum object itself and its content ,and the other to find its(probably member of an enum) counterpart in Z3)
     private Map<org.fmgroup.mediator.language.type.termType.EnumType, Map<String, String>> enumItemConstMap = new HashMap<>();
-    // global reverse mapping: item name -> constName (to resolve IdValue that are actually enum constants)
     private Map<String, String> globalEnumAliasMap = new HashMap<>();
     private int enumGlobalCounter = 0;
 
@@ -92,11 +92,13 @@ public class Z3Generator implements Generator {
             } else {
                 throw new ArduinoGeneratorException("Z3Generator supports Automaton or System elements");
             }
-            
+            // get (flattened) automaton
+
             String name = autom.getName();
             String py = renderZ3Script(autom, this.k);
             FileSet fs = new FileSet();
             fs.add(name + "_z3_check.py", py);
+            // create and output the result of the translation
 
             // Output flattened automaton
             // We add it to the FileSet with a relative path prefix.
@@ -120,7 +122,7 @@ public class Z3Generator implements Generator {
 
     @Override
     public String getSupportedPlatform() {
-        return "z3";
+        return "Z3";
     }
 
     @Override
@@ -163,7 +165,7 @@ public class Z3Generator implements Generator {
         // --- Prepare flattened variable declarations (support struct, enum, union tag+payload) ---
         VariableDeclarationCollection vars = autom.getLocalVars();
 
-        // map base variable -> map(fieldName -> fieldType)
+        // just a varcollection with their id and type, all vars being atomic
         Map<String, Map<String, Type>> varFields = new LinkedHashMap<>();
 
         // enum type mapping: EnumType -> (itemName -> constName)
@@ -172,10 +174,13 @@ public class Z3Generator implements Generator {
         enumGlobalCounter = 0;
 
         for (VariableDeclaration vd : vars.getDeclarationList()) {
+            // get local variable
             for (String id : vd.getIdentifiers()) {
                 Type vt = vd.getType();
                 Type resolved = resolveType(vt);
                 
+                // StructType cases
+                // disassemble the StructType instance and then put them in the varfields
                 if (resolved instanceof StructType) {
                     StructType st = (StructType) resolved;
                     Map<String, Type> fields = new LinkedHashMap<>();
@@ -204,12 +209,14 @@ public class Z3Generator implements Generator {
                     varFields.put(id, fields);
                 } else if (resolved instanceof UnionType) {
                     // tag + payload (payload as Int by default)
+                    // remark: maybe a underdeveloped exception is needed here
                     Map<String, Type> fields = new LinkedHashMap<>();
                     fields.put(id + "_tag", null);
                     fields.put(id + "_val", null);
                     varFields.put(id, fields);
                 } else {
                     // primitive or other: single field named id
+                    // remark: tuple, array, list, map is ommitted here...and init, i haven't really understood it yet
                     Map<String, Type> fields = new LinkedHashMap<>();
                     fields.put(id, resolved);
                     varFields.put(id, fields);
@@ -218,6 +225,8 @@ public class Z3Generator implements Generator {
         }
 
         // emit enum constant definitions
+        // remark: this can only deal with enum declarations that don't determine the value it uses
+        // for example: enum{monday:2,tuesday:5}, then it makes mistake. right only when enum is like {monday,tuesday}
         for (Map.Entry<EnumType, Map<String, String>> e : enumItemConstMap.entrySet()) {
             int idx = 0;
             for (Map.Entry<String, String> it : e.getValue().entrySet()) {
@@ -262,8 +271,9 @@ public class Z3Generator implements Generator {
                 }
                 
                 java.lang.System.out.println("DEBUG: Variable " + id + " init is " + (init==null?"null":init.toString()));
-
+                                
                 // If no explicit init, provide default for primitive types to avoid unconstrained variables
+                // remark: problem is, the default init for port type can cause inconsistency. specifically, if property: in > 2, then the model will fail immediately after the initialization.
                 if (init == null) {
                     Type t = resolveType(vd.getType());
                     if (t instanceof IntType) {
@@ -308,20 +318,30 @@ public class Z3Generator implements Generator {
                 List<Statement> stmts = ts.getStatements();
                 
                 // Track imperative updates within the transition
+                // remark: for cases like, a++ b+= a, then it should be a_{t+1} = a_t + 1, b_{t+1} = b_t + a_t+1, instead of b_{t+1} += b_t + a_t  
                 Map<String, String> currentEnv = new HashMap<>();
                 // Track final values for next state
                 Map<String, String> nextStateValues = new HashMap<>();
 
                 for (Statement st : stmts) {
+                    // remark: in fact ,we ensure that in a flattened mediator, all statements are assignstatements in a transition
                     if (!(st instanceof AssignmentStatement)) continue;
                     AssignmentStatement as = (AssignmentStatement) st;
                     Term target = as.getTarget();
                     Term expr = as.getExpr();
 
                     // Evaluate RHS using current environment (imperative)
+                    // If target is null, it's an expression statement (e.g. void function call)
+                    // remark: i'm not sure whether the code closely following is necessary
+                    if (target == null) {
+                        termToZ3(expr, t, currentEnv);
+                        continue;
+                    }
+
                     String rhs = termToZ3(expr, t, currentEnv);
 
                     // target is a plain identifier (variable)
+                    // remark: a lot of type support is not supported here, like, most importantly, tuple term(relates to assignment like a,b=t1,t2)
                     if (target instanceof IdValue) {
                         String var = ((IdValue) target).getIdentifier();
                         Map<String, Type> fields = varFields.get(var);
@@ -386,6 +406,7 @@ public class Z3Generator implements Generator {
                     }
                 }
 
+                // assemble transitions
                 String updatesConj = String.join(", ", updates);
                 String transExpr = String.format("And(%s, %s)", guard, updatesConj.isEmpty() ? "True" : updatesConj);
                 if (!firstTrans) stepCond.append(", ");
@@ -408,7 +429,11 @@ public class Z3Generator implements Generator {
     sb.append("    print(m)\n");
         return sb.toString();
     }
+    // remark: maybe renderZ3script is too big, we'd better split it into some smaller ones.
 
+    // transitions -> transitionsingles
+    // remark: Schedule ensures that only one single transition group is presented in the flattened autom?
+    // remark: the nondetermined property of transitions can be realized by the OR logic naturally(and since the consequence of each transition is different, only one trans per step)
     private List<TransitionSingle> flattenTransitions(List<Transition> transitions) {
         List<TransitionSingle> result = new ArrayList<>();
         for (Transition t : transitions) {
@@ -421,6 +446,7 @@ public class Z3Generator implements Generator {
         return result;
     }
 
+    // remark: here is a very crude patch
     private String termToZ3(Term term, int t) throws ValidationException {
         return termToZ3(term, t, null);
     }
@@ -574,6 +600,29 @@ public class Z3Generator implements Generator {
             if (opr == EnumSingleOperator.NEGATIVE) return String.format("-(%s)", inner);
         }
 
+        // Function Call (Native Functions / Math)
+        // remark: some experimental part, to be developed
+        if (term instanceof CallTerm) {
+            CallTerm ct = (CallTerm) term;
+            String funcName = ct.getCallee().getIdentifier();
+            
+            // Basic Math mapping
+            if ("abs".equals(funcName)) {
+                if (ct.getArgs().size() > 0) {
+                    String arg = termToZ3(ct.getArgs().get(0), t, env);
+                    // Z3's Abs is for algebraic numbers, but for Int/Real we can use If
+                    return String.format("If(%s >= 0, %s, -%s)", arg, arg, arg);
+                }
+            }
+            
+            // Add more mappings here (min, max, etc.)
+            
+            // Fallback for unknown functions: treat as uninterpreted or ignore
+            // For now, we return a dummy value to avoid crashing, assuming it might be a side-effect function used in expression (unlikely for void)
+            // or a math function we haven't implemented yet.
+            return "0"; 
+        }
+
         // fallback: unsupported term -> raise explicit error so user knows to extend generator
         throw ValidationException.UnderDevelopment();
     }
@@ -582,6 +631,7 @@ public class Z3Generator implements Generator {
         PropertyCollection pc = autom.getProperties();
         if (pc == null) return;
 
+        // remark: getPropertoesMap is defined in the end of the file.
         Map<String, Property> props = getPropertiesMap(pc);
         if (props == null || props.isEmpty()) {
             return;
@@ -593,6 +643,8 @@ public class Z3Generator implements Generator {
         
         List<String> violations = new ArrayList<>();
 
+        // remark: the script only support verification for simplest property,namely,global propertys for atomic propositions
+        // remark: and we really need a lot of "underdeveloped", which is currently absent
         for (Map.Entry<String, Property> entry : props.entrySet()) {
             String propName = entry.getKey();
             Property prop = entry.getValue();
@@ -620,6 +672,7 @@ public class Z3Generator implements Generator {
         }
     }
 
+    // remark: some dirty work, i think this work should be done by scheduler and gemini recognize my advise.
     private void collectProperties(System sys, Automaton target, String prefix) throws ValidationException {
         if (sys.getComponentCollection() == null) return;
         
@@ -655,7 +708,8 @@ public class Z3Generator implements Generator {
             }
         }
         
-        // 2. Ports
+        // 2. Ports 
+        // remark: actually no port in flattened automaton, but it's useful when we verify local automatons, so i decide to keep it...temporarily.
         if (source.getEntityInterface() != null) {
             for (PortDeclaration pd : source.getEntityInterface().getDeclarationList()) {
                 for (String id : pd.getIdentifiers()) {
