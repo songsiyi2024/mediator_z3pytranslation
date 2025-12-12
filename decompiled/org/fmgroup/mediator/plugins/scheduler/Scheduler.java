@@ -36,13 +36,19 @@ import org.fmgroup.mediator.language.term.Value;
 import org.fmgroup.mediator.language.type.termType.BoolType;
 import org.fmgroup.mediator.plugins.scheduler.TopoGraph;
 import org.fmgroup.mediator.plugins.scheduler.TopoGraphVertice;
+import org.fmgroup.mediator.language.property.Property;
+import org.fmgroup.mediator.language.property.PropertyCollection;
+import org.fmgroup.mediator.language.property.PathFormulae.PathFormulae;
+import org.fmgroup.mediator.language.property.PathFormulae.AtomicPathFormulae;
+import org.fmgroup.mediator.language.term.FieldTerm;
+import org.fmgroup.mediator.language.term.IteTerm;
 
 public class Scheduler {
     /*
      * WARNING - void declaration
      */
     public static Automaton Schedule(System sys) throws ValidationException {
-        void var7_14;
+        // void var7_14;
         Automaton a = new Automaton();
         a.setParent(sys.getParent());
         a.setName(sys.getName());
@@ -101,15 +107,18 @@ public class Scheduler {
                 entities.add(automatonComp);
                 typeRewriteMaps.put(automatonComp, typeRewriteMap);
                 termRewriteMaps.put(automatonComp, termRewriteMap);
+                Scheduler.collectProperties(a, automatonComp, termRewriteMap, string);
             }
         }
         for (Connection connection : sys.getConnections()) {
-            void var8_22;
+            Automaton var8_22;
             Templated templated = connection.getProviderWithNoTemplate();
             if (templated instanceof System) {
-                Automaton automaton = Scheduler.Schedule((System)templated);
+                var8_22 = Scheduler.Schedule((System)templated);
+            } else {
+                var8_22 = (Automaton) templated;
             }
-            Automaton automaton = Scheduler.Canonicalize((Automaton)var8_22);
+            Automaton automaton = Scheduler.Canonicalize(var8_22);
             HashMap typeRewriteMap = new HashMap();
             HashMap<String, Value> termRewriteMap = new HashMap<String, Value>();
             int connIndex = sys.getConnections().indexOf(connection);
@@ -131,6 +140,7 @@ public class Scheduler {
             entities.add(automaton);
             typeRewriteMaps.put(automaton, typeRewriteMap);
             termRewriteMaps.put(automaton, termRewriteMap);
+            Scheduler.collectProperties(a, automaton, termRewriteMap, String.format("_%s_%d", automaton.getName(), connIndex));
         }
         TransitionGroup tg = new TransitionGroup().setParent(a);
         a.addTransition(tg);
@@ -151,16 +161,20 @@ public class Scheduler {
         arrayList.add(new HashMap());
         for (Automaton automaton : entities) {
             ArrayList temp = new ArrayList();
-            for (Transition t : (List)extTransitions.get(automaton)) {
-                for (Map map : var7_14) {
+            List transList = (List) extTransitions.get(automaton);
+            for (Object tObj : transList) {
+                Transition t = (Transition) tObj;
+                for (Object mapObj : arrayList) {
+                    Map map = (Map) mapObj;
                     HashMap<Automaton, Transition> newCombination = new HashMap<Automaton, Transition>(map);
                     newCombination.put(automaton, t);
                     temp.add(newCombination);
                 }
             }
-            ArrayList arrayList2 = temp;
+            arrayList = temp;
         }
-        for (Map map : var7_14) {
+        for (Object mapObj : arrayList) {
+            Map map = (Map) mapObj;
             TransitionSingle syncTrans = Scheduler.Synchronize(map, a);
             if (syncTrans == null) continue;
             tg.addTransition(syncTrans);
@@ -261,6 +275,9 @@ public class Scheduler {
         }
         an.setEntityInterface(a.getEntityInterface().copy(an));
         an.setLocalVars(a.getLocalVars().copy(an));
+        if (a.getProperties() != null) {
+            an.setProperties(a.getProperties().copy(an));
+        }
         TransitionGroup tg = new TransitionGroup();
         tg.setParent(an);
         try {
@@ -279,6 +296,117 @@ public class Scheduler {
 
     private static String getPortVariableName(String componentId, String portId, PortVariableType type) {
         return String.format("%s_%s_%s", componentId, portId, type.toString());
+    }
+
+    private static void collectProperties(Automaton target, Automaton source, Map termRewriteMap, String prefix) throws ValidationException {
+        PropertyCollection pc = source.getProperties();
+        if (pc == null) {
+            java.lang.System.out.println("DEBUG: No properties for source " + source.getName());
+            return;
+        }
+        
+        Map<String, Property> props = pc.getPropertiesMap();
+        if (props == null) return;
+
+        if (target.getProperties() == null) {
+            target.setProperties(new PropertyCollection());
+        }
+
+        for (Map.Entry<String, Property> entry : props.entrySet()) {
+             String propName = entry.getKey();
+             java.lang.System.out.println("DEBUG: Processing property " + propName + " with prefix " + prefix);
+             Property p = entry.getValue();
+             
+             PathFormulae pf = p.getFormulae();
+             if (pf instanceof AtomicPathFormulae) {
+                 Term t = ((AtomicPathFormulae) pf).getTerm();
+                 Term newT = Scheduler.rewriteTerm(t, termRewriteMap, target);
+                 
+                 Property newP = new Property();
+                 AtomicPathFormulae newPf = new AtomicPathFormulae();
+                 newPf.setTerm(newT);
+                 newP.setFormulae(newPf);
+                 
+                 String newPropName = prefix + "_" + propName;
+                 target.getProperties().putProperty(newPropName, newP);
+                 java.lang.System.out.println("DEBUG: Added property " + newPropName);
+             }
+        }
+    }
+
+    private static Term rewriteTerm(Term t, Map map, RawElement parent) throws ValidationException {
+        if (t == null) return null;
+
+        if (t instanceof PortVariableValue) {
+            PortVariableValue pvv = (PortVariableValue) t;
+            String portName = pvv.getPortIdentifier().getPortName();
+            String type = pvv.getPortVariableType().toString();
+            
+            String key = portName + "." + type;
+            if (map.containsKey(key)) {
+                return ((Term)map.get(key)).copy(parent);
+            }
+            return t.copy(parent);
+        }
+
+        if (t instanceof IdValue) {
+            String id = ((IdValue) t).getIdentifier();
+            if (map.containsKey(id)) {
+                return ((Term)map.get(id)).copy(parent);
+            }
+            return t.copy(parent);
+        }
+
+        if (t instanceof FieldTerm) {
+            FieldTerm ft = (FieldTerm) t;
+            String field = ft.getField();
+            Term owner = ft.getOwner();
+            
+            if (owner instanceof IdValue) {
+                String ownerId = ((IdValue) owner).getIdentifier();
+                String key = ownerId + "." + field;
+                if (map.containsKey(key)) {
+                    return ((Term)map.get(key)).copy(parent);
+                }
+            }
+            
+            FieldTerm newFt = new FieldTerm();
+            newFt.setParent(parent);
+            newFt.setField(field);
+            newFt.setOwner(Scheduler.rewriteTerm(owner, map, newFt));
+            return newFt;
+        }
+
+        if (t instanceof BinaryOperatorTerm) {
+            BinaryOperatorTerm bt = (BinaryOperatorTerm) t;
+            BinaryOperatorTerm newBt = new BinaryOperatorTerm();
+            newBt.setParent(parent);
+            newBt.setOpr(bt.getOpr());
+            newBt.setLeft(Scheduler.rewriteTerm(bt.getLeft(), map, newBt));
+            newBt.setRight(Scheduler.rewriteTerm(bt.getRight(), map, newBt));
+            return newBt;
+        }
+
+        if (t instanceof SingleOperatorTerm) {
+            SingleOperatorTerm st = (SingleOperatorTerm) t;
+            SingleOperatorTerm newSt = new SingleOperatorTerm();
+            newSt.setParent(parent);
+            newSt.setOpr(st.getOpr());
+            newSt.setTerm(Scheduler.rewriteTerm(st.getTerm(), map, newSt));
+            return newSt;
+        }
+        
+        if (t instanceof IteTerm) {
+            IteTerm it = (IteTerm) t;
+            IteTerm newIt = new IteTerm();
+            newIt.setParent(parent);
+            newIt.setCondition(Scheduler.rewriteTerm(it.getCondition(), map, newIt));
+            newIt.setThenTerm(Scheduler.rewriteTerm(it.getThenTerm(), map, newIt));
+            newIt.setElseTerm(Scheduler.rewriteTerm(it.getElseTerm(), map, newIt));
+            return newIt;
+        }
+
+        return t.copy(parent);
     }
 }
 

@@ -37,6 +37,10 @@ implements RawElement {
         return this;
     }
 
+    public Map<String, Property> getPropertiesMap() {
+        return this.properties;
+    }
+
     @Override
     public PropertyCollection fromContext(ParserRuleContext context, RawElement parent) throws ValidationException {
         if (!(context instanceof MediatorLangParser.PropertySegmentContext)) {

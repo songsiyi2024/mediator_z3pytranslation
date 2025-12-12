@@ -5,7 +5,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.LinkedHashMap;
 import java.util.HashMap;
-import java.lang.reflect.Field;
 import org.fmgroup.mediator.language.RawElement;
 import org.fmgroup.mediator.language.ValidationException;
 import org.fmgroup.mediator.language.entity.Entity;
@@ -85,8 +84,6 @@ public class Z3Generator implements Generator {
             Automaton autom;
             if (elem instanceof System) {
                 autom = Scheduler.Schedule((System) elem);
-                // Fix: Scheduler drops properties, so we manually collect them from sub-components
-                collectProperties((System) elem, autom, "");
             } else if (elem instanceof Automaton) {
                 autom = (Automaton) elem;
             } else {
@@ -632,7 +629,7 @@ public class Z3Generator implements Generator {
         if (pc == null) return;
 
         // remark: getPropertoesMap is defined in the end of the file.
-        Map<String, Property> props = getPropertiesMap(pc);
+        Map<String, Property> props = pc.getPropertiesMap();
         if (props == null || props.isEmpty()) {
             return;
         }
@@ -648,7 +645,7 @@ public class Z3Generator implements Generator {
         for (Map.Entry<String, Property> entry : props.entrySet()) {
             String propName = entry.getKey();
             Property prop = entry.getValue();
-            PathFormulae pf = getPathFormulae(prop);
+            PathFormulae pf = prop.getFormulae();
             
             if (pf == null) {
                 continue;
@@ -669,190 +666,6 @@ public class Z3Generator implements Generator {
                 if (i < violations.size() - 1) sb.append(",\n");
             }
             sb.append("\n))\n");
-        }
-    }
-
-    // remark: some dirty work, i think this work should be done by scheduler and gemini recognize my advise.
-    private void collectProperties(System sys, Automaton target, String prefix) throws ValidationException {
-        if (sys.getComponentCollection() == null) return;
-        
-        for (ComponentDeclaration cd : sys.getComponentCollection().getDeclarationList()) {
-            for (String instanceName : cd.getIdentifiers()) {
-                String newPrefix = prefix.isEmpty() ? instanceName : prefix + "_" + instanceName;
-                Templated type = cd.getType().getProviderWithNoTemplate();
-                
-                if (type instanceof Automaton) {
-                    Automaton autom = (Automaton) type;
-                    addPropertiesFromAutomaton(autom, target, newPrefix);
-                } else if (type instanceof System) {
-                    collectProperties((System) type, target, newPrefix);
-                }
-            }
-        }
-    }
-
-    private void addPropertiesFromAutomaton(Automaton source, Automaton target, String prefix) throws ValidationException {
-        try {
-        PropertyCollection pc = source.getProperties();
-        if (pc == null) return;
-
-        Map<String, Term> termRewriteMap = new HashMap<>();
-        
-        // 1. Local variables
-        if (source.getLocalVars() != null) {
-            for (VariableDeclaration vd : source.getLocalVars().getDeclarationList()) {
-                for (String id : vd.getIdentifiers()) {
-                    String newId = prefix + "_" + id;
-                    termRewriteMap.put(id, new IdValue().setParent(target).setIdentifier(newId));
-                }
-            }
-        }
-        
-        // 2. Ports 
-        // remark: actually no port in flattened automaton, but it's useful when we verify local automatons, so i decide to keep it...temporarily.
-        if (source.getEntityInterface() != null) {
-            for (PortDeclaration pd : source.getEntityInterface().getDeclarationList()) {
-                for (String id : pd.getIdentifiers()) {
-                    // PortVariableType.VALUE -> "value"
-                    termRewriteMap.put(id + ".value", new IdValue().setParent(target).setIdentifier(prefix + "_" + id + "_value"));
-                    termRewriteMap.put(id + ".reqRead", new IdValue().setParent(target).setIdentifier(prefix + "_" + id + "_reqRead"));
-                    termRewriteMap.put(id + ".reqWrite", new IdValue().setParent(target).setIdentifier(prefix + "_" + id + "_reqWrite"));
-                }
-            }
-        }
-        
-        Map<String, Property> props = getPropertiesMap(pc);
-        if (props == null) return;
-
-        for (Map.Entry<String, Property> entry : props.entrySet()) {
-             String propName = entry.getKey();
-             Property p = entry.getValue();
-             
-             PathFormulae pf = p.getFormulae();
-             if (pf instanceof AtomicPathFormulae) {
-                 Term t = ((AtomicPathFormulae) pf).getTerm();
-                 
-                 // We DO NOT clone the term here because copy(null) crashes on PortVariableValue.
-                 // rewriteTerm will create a copy with replacements.
-                 
-                 Term newT = rewriteTerm(t, termRewriteMap, target);
-                 
-                 Property newP = new Property();
-                 AtomicPathFormulae newPf = new AtomicPathFormulae();
-                 newPf.setTerm(newT);
-                 newP.setFormulae(newPf);
-                 
-                 if (target.getProperties() == null) {
-                     target.setProperties(new PropertyCollection());
-                 }
-                 
-                 String newPropName = prefix + "_" + propName;
-                 target.getProperties().putProperty(newPropName, newP);
-             }
-        }
-        } catch (Exception e) {
-            e.printStackTrace();
-            if (e instanceof ValidationException) throw (ValidationException) e;
-            throw new RuntimeException(e);
-        }
-    }
-
-    private Term rewriteTerm(Term t, Map<String, Term> map, RawElement parent) throws ValidationException {
-        if (t == null) return null;
-
-        if (t instanceof PortVariableValue) {
-            PortVariableValue pvv = (PortVariableValue) t;
-            String portName = pvv.getPortIdentifier().getPortName();
-            String type = pvv.getPortVariableType().toString();
-            
-            String key = portName + "." + type;
-            if (map.containsKey(key)) {
-                return map.get(key).copy(parent);
-            }
-            return t.copy(parent);
-        }
-
-        if (t instanceof IdValue) {
-            String id = ((IdValue) t).getIdentifier();
-            if (map.containsKey(id)) {
-                return map.get(id).copy(parent);
-            }
-            return t.copy(parent);
-        }
-
-        if (t instanceof FieldTerm) {
-            FieldTerm ft = (FieldTerm) t;
-            String field = ft.getField();
-            Term owner = ft.getOwner();
-            
-            if (owner instanceof IdValue) {
-                String ownerId = ((IdValue) owner).getIdentifier();
-                String key = ownerId + "." + field;
-                if (map.containsKey(key)) {
-                    return map.get(key).copy(parent);
-                }
-            }
-            
-            FieldTerm newFt = new FieldTerm();
-            newFt.setParent(parent);
-            newFt.setField(field);
-            newFt.setOwner(rewriteTerm(owner, map, newFt));
-            return newFt;
-        }
-
-        if (t instanceof BinaryOperatorTerm) {
-            BinaryOperatorTerm bt = (BinaryOperatorTerm) t;
-            BinaryOperatorTerm newBt = new BinaryOperatorTerm();
-            newBt.setParent(parent);
-            newBt.setOpr(bt.getOpr());
-            newBt.setLeft(rewriteTerm(bt.getLeft(), map, newBt));
-            newBt.setRight(rewriteTerm(bt.getRight(), map, newBt));
-            return newBt;
-        }
-
-        if (t instanceof SingleOperatorTerm) {
-            SingleOperatorTerm st = (SingleOperatorTerm) t;
-            SingleOperatorTerm newSt = new SingleOperatorTerm();
-            newSt.setParent(parent);
-            newSt.setOpr(st.getOpr());
-            newSt.setTerm(rewriteTerm(st.getTerm(), map, newSt));
-            return newSt;
-        }
-        
-        if (t instanceof IteTerm) {
-            IteTerm it = (IteTerm) t;
-            IteTerm newIt = new IteTerm();
-            newIt.setParent(parent);
-            newIt.setCondition(rewriteTerm(it.getCondition(), map, newIt));
-            newIt.setThenTerm(rewriteTerm(it.getThenTerm(), map, newIt));
-            newIt.setElseTerm(rewriteTerm(it.getElseTerm(), map, newIt));
-            return newIt;
-        }
-
-        return t.copy(parent);
-    }
-
-
-    @SuppressWarnings("unchecked")
-    private Map<String, Property> getPropertiesMap(PropertyCollection pc) {
-        try {
-            Field f = PropertyCollection.class.getDeclaredField("properties");
-            f.setAccessible(true);
-            return (Map<String, Property>) f.get(pc);
-        } catch (Exception e) {
-            e.printStackTrace();
-            return null;
-        }
-    }
-
-    private PathFormulae getPathFormulae(Property prop) {
-        try {
-            Field f = Property.class.getDeclaredField("formulae");
-            f.setAccessible(true);
-            return (PathFormulae) f.get(prop);
-        } catch (Exception e) {
-            // e.printStackTrace();
-            return null;
         }
     }
 
