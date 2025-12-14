@@ -40,3 +40,6 @@ To achieve full industrial-strength verification capabilities, the following are
 2.  **Constraint Optimization**: Implement formula simplification strategies (e.g., cone-of-influence reduction, common subexpression elimination) to minimize the size of generated SMT queries and improve solver performance.
 3.  **Unbounded Verification**: Extend the framework to support $k$-induction or invariant generation techniques, enabling the proof of properties for unbounded time horizons.
 4.  **Native Function Expansion**: Broaden the support for external native functions and libraries, ensuring that platform-specific behaviors (e.g., Arduino hardware abstraction) are correctly modeled in the SMT domain.
+
+   
+some notes: when developing, we didn't notice the java codes in the repository out of the release folder by accident.As a consequence, we developed those things based on decompiled codes.It may have caused and will cause some problems i think, which is really embarrassing. 
