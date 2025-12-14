@@ -1,0 +1,17 @@
+function addOne(val : int) : int {
+    statements {
+        return val + 1;
+    }
+}
+
+automaton TestFunctionSimple() {
+    variables {
+        x : int init 0;
+    }
+
+    transitions {
+        true -> {
+            x = addOne(x);
+        }
+    }
+}

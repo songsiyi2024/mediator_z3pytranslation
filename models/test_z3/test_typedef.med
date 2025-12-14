@@ -1,0 +1,19 @@
+typedef int 0 .. 100 as Percentage;
+
+function addBonus(val : Percentage) : Percentage {
+    statements {
+        return val + 10;
+    }
+}
+
+automaton TestTypedef() {
+    variables {
+        score : Percentage init 50;
+    }
+
+    transitions {
+        true -> {
+            score = addBonus(score);
+        }
+    }
+}

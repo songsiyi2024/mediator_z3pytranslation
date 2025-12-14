@@ -1,0 +1,17 @@
+automaton UnionAssignmentTest() {
+    variables {
+        u : int | bool init 10;
+        x : int init 0;
+        b : bool init false;
+    }
+    transitions {
+        x == 0 -> {
+            x = u; // Assign union (int variant) to int
+            u = true; // Switch union to bool variant
+        }
+        x != 0 -> {
+            b = u; // Assign union (bool variant) to bool
+        }
+    }
+}
+           

@@ -1,0 +1,38 @@
+automaton MedicalSystem () {
+	variables {
+	 	sensor_current_bpm: int 0 .. 200 init 60;
+		sensor_OUT_value: int 0 .. 200;
+		sensor_OUT_reqRead: bool;
+		sensor_OUT_reqWrite: bool;
+		monitor_IN_value: int 0 .. 1;
+		monitor_IN_reqRead: bool;
+		monitor_IN_reqWrite: bool;
+		_SafetyController_0_buffered_status: int 0 .. 1 init 0;
+		_SafetyController_0_has_data: int 0 .. 1 init 0;
+	}
+	transitions {
+		group {
+			!false && sensor_OUT_reqRead != sensor_OUT_reqWrite -> sensor_OUT_reqWrite = sensor_OUT_reqRead;
+			!false && monitor_IN_reqRead == false -> monitor_IN_reqRead = true;
+			!false && sensor_OUT_reqRead != _SafetyController_0_has_data == 0 -> sensor_OUT_reqRead = _SafetyController_0_has_data == 0;
+			!(false || sensor_OUT_reqRead != _SafetyController_0_has_data == 0) && monitor_IN_reqWrite != (monitor_IN_reqRead && _SafetyController_0_has_data == 1) -> monitor_IN_reqWrite = monitor_IN_reqRead && _SafetyController_0_has_data == 1;
+			!(false || sensor_OUT_reqRead != sensor_OUT_reqWrite) && sensor_OUT_reqWrite && !(false || sensor_OUT_reqRead != _SafetyController_0_has_data == 0 || monitor_IN_reqWrite != (monitor_IN_reqRead && _SafetyController_0_has_data == 1)) && sensor_OUT_reqRead -> {
+				sensor_OUT_value = sensor_current_bpm;
+				sensor_OUT_reqWrite = false;
+				sensor_OUT_reqRead = false;
+				_SafetyController_0_buffered_status = sensor_OUT_value > 100 ? 1 : 0;
+				_SafetyController_0_has_data = 1;
+				sensor_current_bpm = predict_next(sensor_current_bpm);
+			}
+			!(false || monitor_IN_reqRead == false) && monitor_IN_reqWrite && !(false || sensor_OUT_reqRead != _SafetyController_0_has_data == 0 || monitor_IN_reqWrite != (monitor_IN_reqRead && _SafetyController_0_has_data == 1) || sensor_OUT_reqRead) && monitor_IN_reqWrite -> {
+				monitor_IN_value = _SafetyController_0_buffered_status;
+				monitor_IN_reqWrite = false;
+				monitor_IN_reqRead = false;
+				_SafetyController_0_has_data = 0;
+			}
+		}
+	}
+	properties {
+		monitor_safe: A G monitor_IN_value == 0;
+	}
+}

@@ -1,0 +1,20 @@
+automaton TestLTL() {
+    variables {
+        x : int init 0;
+        y : int init 0;
+    }
+    transitions {
+        true -> {
+            x = x + 1;
+            y = y + 1;
+        }
+    }
+    properties {
+        p1 : A G (x >= 0);
+        p2 : A F (x > 5);
+        p3 : A [ x >= 0 U x > 5 ];
+        p4 : A X (x == 1);
+        p5 : !(x < 0);
+        p6 : x >= 0 && y >= 0;
+    }
+}

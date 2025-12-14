@@ -1,0 +1,18 @@
+function inc(x: int) : int {
+    statements {
+        return x + 1;
+    }
+}
+
+automaton TestFunction() {
+    variables {
+        x : int init 0;
+        y : int init 0;
+    }
+    transitions {
+        true -> {
+            y = inc(x);
+            x = x + 1;
+        }
+    }
+}

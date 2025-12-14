@@ -34,6 +34,6 @@ automaton testbench () {
 		}
 	}
 	properties {
-		m_safe: m_IN_value < 2;
+		m_safe: A G m_IN_value < 2;
 	}
 }

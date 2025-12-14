@@ -1,0 +1,16 @@
+automaton UnionStrongTest() {
+    variables {
+        u : int | bool init 0;
+        u_copy : int | bool init false;
+    }
+    transitions {
+        true -> {
+            u = 10;
+            u_copy = u;
+        }
+        true -> {
+            u = true;
+            u_copy = u;
+        }
+    }
+}

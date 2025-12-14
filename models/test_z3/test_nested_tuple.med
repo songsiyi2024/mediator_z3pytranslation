@@ -1,0 +1,13 @@
+automaton test_nested_tuple() {
+    variables {
+        t1 : (int, int) init (1, 2);
+        t2 : (int, (int, int)) init (3, (4, 5));
+        v : int init 0;
+    }
+    transitions {
+        true -> {
+            v = t2[1][0]; // Access might be tricky if not flattened
+            t2 = (6, (7, 8));
+        }
+    }
+}

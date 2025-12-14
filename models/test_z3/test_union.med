@@ -1,0 +1,14 @@
+automaton UnionTest() {
+    variables {
+        u : int | int init 10; 
+        x : int init 0;
+        y : int init 0;
+    }
+    transitions {
+        true -> {
+            u = 20;
+            // x = u; // This would be invalid if u is double
+            // y = u; // This should work if u is double
+        }
+    }
+}

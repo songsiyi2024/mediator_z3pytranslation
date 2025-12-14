@@ -2,6 +2,11 @@
 .DS_Store
 *.log
 .gradle/
+/decompiled/
+/examples/
+/org-classes.jar
+/sources.txt
+
 
 # Ignore large local Gradle distribution used for offline wrapper
 

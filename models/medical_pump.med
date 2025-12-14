@@ -1,0 +1,94 @@
+// Medical Infusion Pump System Example
+// Demonstrates: Typedefs, Functions, Automata with Parameters, System Connections, LTL Properties, Ternary Operator
+
+// 1. Typedefs
+typedef int 0 .. 200 init 60 as bpm_t;
+typedef int 0 .. 1 init 0 as signal_t; // 0: Normal, 1: Critical Alarm
+
+// 2. Functions
+// Simple prediction function (linear extrapolation simulation)
+function predict_next(val : int) : int {
+    statements {
+        // Simulate heart rate increasing
+        return (val + 5) % 150;
+    }
+}
+
+// 3. Automata
+
+// Sensor: Simulates patient heart rate
+automaton HeartSensor(OUT: out int 0..200) {
+    variables {
+        current_bpm : int 0..200 init 60;
+    }
+    transitions {
+        // Handshake: Ready to write
+        OUT.reqRead != OUT.reqWrite -> OUT.reqWrite = OUT.reqRead;
+        
+        OUT.reqWrite -> {
+            OUT.value = current_bpm;
+            sync OUT;
+            // Update state using function
+            current_bpm = predict_next(current_bpm);
+        }
+    }
+}
+
+// Controller: Checks threshold and sends status
+automaton <threshold:int> SafetyController(IN: in int 0..200, OUT: out int 0..1) {
+    variables {
+        buffered_status : int 0..1 init 0;
+        has_data : int 0..1 init 0;
+    }
+    transitions {
+        // Input side: Ready to read if buffer is empty
+        IN.reqRead != (has_data == 0) -> IN.reqRead = (has_data == 0);
+        
+        // Output side: Ready to write if buffer is full AND receiver is ready
+        OUT.reqWrite != (OUT.reqRead && has_data == 1) -> OUT.reqWrite = (OUT.reqRead && has_data == 1);
+
+        // Read transition
+        IN.reqRead -> {
+            sync IN;
+            // Use ternary operator for logic
+            buffered_status = (IN.value > threshold) ? 1 : 0;
+            has_data = 1;
+        }
+
+        // Write transition
+        OUT.reqWrite -> {
+            OUT.value = buffered_status;
+            sync OUT;
+            has_data = 0;
+        }
+    }
+}
+
+// Monitor: Receives status and checks safety
+automaton AlarmMonitor(IN: in int 0..1) {
+    transitions {
+        // Always ready to read
+        IN.reqRead == false -> IN.reqRead = true;
+        
+        IN.reqWrite -> {
+            sync IN;
+        }
+    }
+    properties {
+        // Safety Property: The system should never be in a critical state (signal 1)
+        // This is expected to fail when heart rate exceeds threshold
+        safe : A G (IN.value == 0);
+    }
+}
+
+// 4. System
+system MedicalSystem() {
+    components {
+        sensor : HeartSensor;
+        monitor : AlarmMonitor;
+    }
+    connections {
+        // Connect Sensor to Monitor via SafetyController with threshold 100
+        SafetyController<100>(sensor.OUT, monitor.IN);
+    }
+}

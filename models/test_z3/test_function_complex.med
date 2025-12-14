@@ -1,0 +1,64 @@
+typedef struct {
+    x : int;
+    y : int;
+} as Point;
+
+// 1. Primitive -> Primitive
+function addOne(val : int) : int {
+    statements {
+        return val + 1;
+    }
+}
+
+// 2. Composite -> Primitive (Flattening args)
+function sumPoint(pt : Point) : int {
+    statements {
+        return 0;
+    }
+}
+
+// 3. Primitive -> Composite (Tuple return)
+function makePoint(v : int) : Point {
+    variables {
+        newP : Point;
+    }
+    statements {
+        newP = {x = v, y = v + 1};
+        return newP;
+    }
+}
+
+// 4. Composite Assignment inside function
+function swapPoint(pt : Point) : Point {
+    variables {
+        temp : Point;
+    }
+    statements {
+        temp = pt;
+        return temp;
+    }
+}
+
+automaton FunctionComplexTest() {
+    variables {
+        p1 : Point;
+        p2 : Point;
+        val : int init 0;
+    }
+    transitions {
+        val == 0 -> {
+            // Test primitive
+            val = addOne(val); 
+            
+            // Test composite return
+            p1 = makePoint(10); 
+        }
+        val != 0 -> {
+            // Test composite arg
+            val = sumPoint(p1); 
+            
+            // Test composite manipulation
+            p2 = swapPoint(p1); 
+        }
+    }
+}
